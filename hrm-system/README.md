@@ -11,7 +11,11 @@ Backend: Node.js + NestJS (Express adapter) + TypeScript + SQLite (`node:sqlite`
 - Email/Notification Service chạy riêng trên `EMAIL_PORT` (mặc định `3200`), nhận lệnh email, thông báo và audit từ Core qua HTTP có xác thực nội bộ. Service sở hữu `EMAIL_DB_FILE`, chứa `email_dispatches`, `notifications` và `audit_logs`; không lưu nội dung email hay khóa ngoại sang bảng users. Đây là process duy nhất giữ cấu hình/credential SMTP.
 - Config Service chạy riêng trên `CONFIG_PORT` (mặc định `3300`), sở hữu `CONFIG_DB_FILE` và lưu `settings`/`holidays`. Core gọi service qua HTTP; các nghiệp vụ đồng bộ trong Core đọc cache trong bộ nhớ, được nạp lúc khởi động và làm mới mỗi 30 giây.
 - Identity Service chạy riêng trên `IDENTITY_PORT` (mặc định `3001`), sở hữu `IDENTITY_DB_FILE` và lưu `users`/`password_reset_tokens`. Chỉ Identity giữ `JWT_SECRET`, băm mật khẩu và phát hành token. Gateway gọi introspection qua HTTP, cache danh tính tối đa 30 giây rồi gắn các header đã xác thực khi chuyển tiếp request; Core không tự xác minh JWT.
-- Gateway không truy cập database. Lệnh `npm start` khởi chạy cả năm process; các service kiểm tra health trước khi nhận lưu lượng.
+- Employee Service chạy riêng trên `EMPLOYEE_PORT` (mặc định `3002`), sở hữu `EMPLOYEE_DB_FILE` và lưu nhân viên, phòng ban, chức danh, lịch sử nhân viên. Core và các phân hệ khác lấy dữ liệu nhân viên qua API nội bộ; không JOIN hoặc đọc trực tiếp DB của Employee.
+- Leave Service chạy riêng trên `LEAVE_PORT` (mặc định `3004`), sở hữu `LEAVE_DB_FILE` và lưu loại nghỉ, đơn nghỉ, đề nghị tăng ca. Core và Attendance gọi API nội bộ; Core truyền quota hiện hành từ Config cache khi yêu cầu tính số dư phép.
+- Attendance Service chạy riêng trên `ATTENDANCE_PORT` (mặc định `3003`), sở hữu `ATTENDANCE_DB_FILE` và lưu dữ liệu chấm công. Service tính tổng hợp công bằng cách gọi Config và Leave Service qua API; không đọc DB của Core.
+- Payroll Service chạy riêng trên `PAYROLL_PORT` (mặc định `3005`), sở hữu `PAYROLL_DB_FILE` và lưu lương, kỳ lương, phiếu lương, điều chỉnh và ứng lương. Payroll lấy nhân viên, cấu hình, công và tăng ca qua API; không đọc DB của Core hoặc service khác.
+- Gateway không truy cập database. Lệnh `npm start` khởi chạy cả chín process; các service kiểm tra health trước khi nhận lưu lượng.
 - Gateway áp dụng timeout `GATEWAY_TIMEOUT_MS` (mặc định 5 giây); lỗi kết nối hoặc timeout trả HTTP 503 với mã `CORE_SERVICE_UNAVAILABLE`.
 - Gateway áp dụng `IDENTITY_SERVICE_TIMEOUT_MS` (mặc định 3 giây); nếu Identity không khả dụng, request cần đăng nhập trả HTTP 503.
 - Core áp dụng timeout `EMAIL_SERVICE_TIMEOUT_MS` cho email; các lệnh thông báo/audit dùng `NOTIFICATION_SERVICE_TIMEOUT_MS`, không chặn nghiệp vụ và ghi lỗi nếu gửi thất bại.
@@ -22,26 +26,37 @@ Backend: Node.js + NestJS (Express adapter) + TypeScript + SQLite (`node:sqlite`
 - Hợp đồng nội bộ Core → Config Service được mô tả trong [`contracts/config-service.openapi.yaml`](./contracts/config-service.openapi.yaml).
 - Hợp đồng nội bộ Gateway/Core → Identity Service được mô tả trong [`contracts/identity-service.openapi.yaml`](./contracts/identity-service.openapi.yaml).
 - Hợp đồng Identity → Core cho thao tác bảo đảm hồ sơ nhân viên được mô tả trong [`contracts/core-internal.openapi.yaml`](./contracts/core-internal.openapi.yaml).
+- Hợp đồng Core và các phân hệ → Employee Service được mô tả trong [`contracts/employee-service.openapi.yaml`](./contracts/employee-service.openapi.yaml).
+- Hợp đồng Core và các phân hệ → Attendance Service được mô tả trong [`contracts/attendance-service.openapi.yaml`](./contracts/attendance-service.openapi.yaml).
+- Hợp đồng Core, Attendance và các phân hệ → Leave Service được mô tả trong [`contracts/leave-service.openapi.yaml`](./contracts/leave-service.openapi.yaml).
+- Hợp đồng Core và các phân hệ → Payroll Service được mô tả trong [`contracts/payroll-service.openapi.yaml`](./contracts/payroll-service.openapi.yaml).
 - Khi khởi động, Core chuyển dữ liệu `notifications`/`audit_logs` cũ sang service theo batch, sau đó xóa hai bảng cũ khỏi `hrm.db`.
 - Khi khởi động, Core cũng chuyển `settings`/`holidays` cũ sang `config.db`, rồi xóa các bảng đó khỏi `hrm.db`.
 - Khi khởi động, Core chuyển `users`/`password_reset_tokens` cũ sang `identity.db` (giữ nguyên ID, password hash và token hash), rồi xóa các bảng đó khỏi `hrm.db`. Nếu chuyển dữ liệu thất bại, Core không khởi động để tránh mất dữ liệu.
 - Tạo tài khoản mới gọi Core qua endpoint nội bộ để bảo đảm hồ sơ nhân viên tồn tại; các truy vấn users trong Leave, Overtime và Payroll gọi Identity API thay vì đọc DB của Identity.
-- Nhân viên, tổ chức, chấm công, nghỉ phép, tăng ca, lương, báo cáo và lịch sử vẫn nằm trong Core, dùng chung `hrm.db`/`lib.js`; các miền này chưa có process/database riêng và tiếp tục cần tách.
+- Khi khởi động, Core chuyển nhân viên/phòng ban/chức danh/lịch sử cũ sang `employee.db`, xác minh dữ liệu đã nhận rồi mới xóa các bảng cũ khỏi `hrm.db`. Những bảng Core từng tham chiếu nhân viên được dựng lại không còn khóa ngoại xuyên service; nếu migration lỗi, Core giữ nguyên dữ liệu cũ và không khởi động.
+- Khi khởi động, Core chuyển loại nghỉ/đơn nghỉ/tăng ca sang `leave.db`, xác minh dữ liệu rồi mới xóa các bảng cũ khỏi `hrm.db`. Attendance lấy thông tin nghỉ đã duyệt qua Leave API.
+- Khi khởi động, Core chuyển dữ liệu chấm công sang `attendance.db`, xác minh từng bản ghi rồi mới xóa bảng cũ khỏi `hrm.db`.
+- Khi khởi động, Core chuyển dữ liệu lương sang `payroll.db`, xác minh dữ liệu từng batch rồi mới xóa các bảng lương cũ khỏi `hrm.db`.
+- Báo cáo vẫn chạy trong Core và dùng DB của các service qua API; cần tách thành Reporting Service riêng để hoàn tất kế hoạch phân rã.
+- Mỗi service sở hữu DB riêng, nhưng hệ thống vẫn đang chuyển đổi theo SOA do Reporting chưa được tách process riêng.
 
 ## Chạy thử (5 phút)
 
 ```bash
 npm install
 cp .env.example .env        # rồi điền JWT_SECRET (xem hướng dẫn trong file)
-npm start                   # tự biên dịch, chạy Gateway :3000, Identity :3001, Core :3100, Email :3200, Config :3300, Employee :3002
+npm start                   # tự biên dịch và chạy Gateway, Core, Email, Config, Identity, Employee, Leave, Attendance, Payroll
 npm test                    # chạy bộ kiểm thử API 
 ```
 
-Trong môi trường production, đặt `INTERNAL_SERVICE_TOKEN` thành chuỗi ngẫu nhiên dài; không dùng token mặc định dành cho development. `npm run start:core`, `npm run start:gateway`, `npm run start:email`, `npm run start:config`, `npm run start:identity`, `npm run start:employee` khởi chạy từng process riêng nếu cần. Nếu chạy Core riêng, phải khởi động Identity, Email/Notification, Config và Employee Service trước.
+Trong môi trường production, đặt `INTERNAL_SERVICE_TOKEN` thành chuỗi ngẫu nhiên dài; không dùng token mặc định dành cho development. Các lệnh `npm run start:core`, `npm run start:gateway`, `npm run start:email`, `npm run start:config`, `npm run start:identity`, `npm run start:employee`, `npm run start:leave`, `npm run start:attendance` và `npm run start:payroll` khởi chạy từng process riêng. Nếu chạy Core riêng, phải khởi động Identity, Email/Notification, Config, Employee, Leave, Attendance và Payroll Service trước.
 
-Employee Service (`EMPLOYEE_PORT`, mặc định 3002) hiện đã có process, DB và hợp đồng API riêng. Ở giai đoạn chuyển tiếp hiện tại, Core vẫn còn giữ và sử dụng các bảng nhân viên trong `hrm.db`; khi khởi động, dữ liệu được sao chép sang `employee.db` nhưng chưa xóa bảng cũ hoặc chuyển hết các route sang API. Vì vậy đây **chưa phải cutover hoàn chỉnh**. Sao lưu thư mục `data/` trước lần chạy đầu tiên để tạo DB này.
+Employee Service (`EMPLOYEE_PORT`, mặc định 3002) đã sở hữu dữ liệu nhân viên/tổ chức/lịch sử trong `employee.db`; các route và caller đã chuyển sang API.
 
-Khi phát triển có hot reload, chạy `npm run dev:identity`, `npm run dev:email`, `npm run dev:config`, `npm run dev:employee`, `npm run dev:core` và `npm run dev:gateway` trong các terminal riêng.
+Leave Service (`LEAVE_PORT`, mặc định 3004) đã sở hữu dữ liệu nghỉ phép/tăng ca trong `leave.db`. Attendance Service (`ATTENDANCE_PORT`, mặc định 3003) đã sở hữu dữ liệu chấm công trong `attendance.db`. Payroll Service (`PAYROLL_PORT`, mặc định 3005) đã sở hữu dữ liệu lương trong `payroll.db`. **Sao lưu thư mục `data/` trước lần khởi động đầu tiên sau nâng cấp**: migration sẽ xóa các bảng đã chuyển khỏi `hrm.db` sau khi xác minh dữ liệu.
+
+Khi phát triển có hot reload, chạy `npm run dev:identity`, `npm run dev:email`, `npm run dev:config`, `npm run dev:employee`, `npm run dev:leave`, `npm run dev:attendance`, `npm run dev:payroll`, `npm run dev:core` và `npm run dev:gateway` trong các terminal riêng.
 
 Lần chạy đầu tiên, màn hình đăng nhập có nút tạo **tài khoản Admin đầu tiên**. Sau đó đăng ký tự do **đóng hẳn**: Admin tạo tài khoản ở tab "Tài khoản" (hệ thống sinh mật khẩu tạm, hiện một lần để chuyển cho nhân viên). HR tạo được tài khoản Nhân viên qua API `POST /api/users`; Admin tạo và đổi được mọi vai trò. Mật khẩu tối thiểu 8 ký tự. Tài khoản mới và tài khoản được Admin đặt lại mật khẩu phải đổi mật khẩu ở lần đăng nhập tiếp theo; khi nâng cấp hệ thống, các tài khoản hiện có cũng cần đổi mật khẩu một lần.
 

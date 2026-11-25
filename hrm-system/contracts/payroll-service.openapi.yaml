@@ -1,0 +1,347 @@
+openapi: 3.1.0
+info:
+  title: HRM Payroll Service
+  version: 1.0.0
+  description: Internal API for payroll, payslips, advances, and payroll reporting.
+servers:
+  - url: http://127.0.0.1:3005
+security:
+  - InternalServiceToken: []
+paths:
+  /health:
+    get:
+      security: []
+      responses:
+        "200":
+          description: Service health status.
+  /internal/v1/payroll/salaries:
+    get:
+      parameters:
+        - in: query
+          name: employee_ids
+          schema:
+            type: string
+          description: Comma-separated employee IDs; omitted to list all salaries.
+      responses:
+        "200":
+          description: Salary records.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /internal/v1/payroll/salaries/{employeeId}:
+    put:
+      parameters:
+        - $ref: "#/components/parameters/EmployeeId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [base_salary, allowance, exempt_allowance, dependents, insured, insured_salary]
+              properties:
+                base_salary: { type: number }
+                allowance: { type: number }
+                exempt_allowance: { type: number }
+                dependents: { type: integer }
+                insured: { type: boolean }
+                insured_salary: { type: number }
+      responses:
+        "200":
+          description: Saved salary record.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /internal/v1/payroll/periods:
+    get:
+      parameters:
+        - in: query
+          name: employee_id
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Payroll periods.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    post:
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [month, created_by]
+              properties:
+                month: { type: string, pattern: "^\\d{4}-\\d{2}$" }
+                created_by: { type: string }
+      responses:
+        "201":
+          description: Created payroll period.
+        "400":
+          description: Invalid month or duplicate period.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /internal/v1/payroll/periods/{id}:
+    parameters:
+      - $ref: "#/components/parameters/PeriodId"
+    get:
+      responses:
+        "200":
+          description: Payroll period.
+        "404":
+          description: Period not found.
+    delete:
+      responses:
+        "200":
+          description: Deleted draft period.
+        "400":
+          description: Period cannot be deleted in its current state.
+  /internal/v1/payroll/periods/{id}/payslips:
+    get:
+      parameters:
+        - $ref: "#/components/parameters/PeriodId"
+        - in: query
+          name: employee_id
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Payslips for the period.
+  /internal/v1/payroll/periods/{id}/calculate:
+    post:
+      parameters:
+        - $ref: "#/components/parameters/PeriodId"
+      responses:
+        "200":
+          description: Calculation result.
+        "400":
+          description: Period is not a draft or input is invalid.
+        "503":
+          description: A dependent service is unavailable; no payroll changes were committed.
+  /internal/v1/payroll/periods/{id}/lock:
+    post:
+      parameters:
+        - $ref: "#/components/parameters/PeriodId"
+      responses:
+        "200":
+          description: Locked period and affected employee IDs.
+  /internal/v1/payroll/periods/{id}/unlock:
+    post:
+      parameters:
+        - $ref: "#/components/parameters/PeriodId"
+      responses:
+        "200":
+          description: Unlocked period.
+  /internal/v1/payroll/periods/{id}/adjustments:
+    parameters:
+      - $ref: "#/components/parameters/PeriodId"
+    get:
+      responses:
+        "200":
+          description: Period adjustments.
+    post:
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [employee_id, type, amount, note, created_by]
+              properties:
+                employee_id: { type: integer }
+                type: { type: string }
+                amount: { type: number }
+                note: { type: string }
+                created_by: { type: string }
+      responses:
+        "201":
+          description: Created adjustment.
+  /internal/v1/payroll/periods/{id}/adjustments/{adjustmentId}:
+    delete:
+      parameters:
+        - $ref: "#/components/parameters/PeriodId"
+        - name: adjustmentId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Deleted adjustment.
+  /internal/v1/payroll/advances:
+    get:
+      parameters:
+        - in: query
+          name: employee_id
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Advance requests.
+    post:
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [employee_id, month, amount, note]
+              properties:
+                employee_id: { type: integer }
+                month: { type: string }
+                amount: { type: number }
+                note: { type: string }
+                as_of: { type: string, format: date }
+      responses:
+        "201":
+          description: Created advance request.
+  /internal/v1/payroll/advances/{id}:
+    get:
+      parameters:
+        - $ref: "#/components/parameters/RecordId"
+      responses:
+        "200":
+          description: Advance request or null if not found.
+  /internal/v1/payroll/advances/{id}/decision:
+    put:
+      parameters:
+        - $ref: "#/components/parameters/RecordId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [action, reviewed_by, review_note]
+              properties:
+                action: { type: string, enum: [approve, reject] }
+                reviewed_by: { type: string }
+                review_note: { type: string }
+                as_of: { type: string, format: date }
+      responses:
+        "200":
+          description: Updated advance request.
+  /internal/v1/payroll/advance-summary:
+    get:
+      parameters:
+        - in: query
+          name: employee_id
+          required: true
+          schema: { type: integer }
+        - in: query
+          name: month
+          required: true
+          schema: { type: string }
+        - in: query
+          name: exclude_request_id
+          schema: { type: integer }
+        - in: query
+          name: as_of
+          schema: { type: string, format: date }
+      responses:
+        "200":
+          description: Advance balance summary.
+  /internal/v1/payroll/lock-status:
+    get:
+      parameters:
+        - in: query
+          name: from
+          schema: { type: string, format: date }
+        - in: query
+          name: to
+          schema: { type: string, format: date }
+        - in: query
+          name: month
+          schema: { type: string }
+      responses:
+        "200":
+          description: Payroll lock status for the requested period.
+  /internal/v1/payroll/employees/{id}/has-data:
+    get:
+      parameters:
+        - $ref: "#/components/parameters/EmployeeId"
+      responses:
+        "200":
+          description: Whether payroll-owned records exist for the employee.
+  /internal/v1/payroll/stats/cost:
+    get:
+      parameters:
+        - in: query
+          name: month
+          required: true
+          schema: { type: string }
+        - in: query
+          name: department
+          schema: { type: string }
+      responses:
+        "200":
+          description: Payroll cost summary.
+  /internal/v1/payroll/stats/trend:
+    get:
+      responses:
+        "200":
+          description: Payroll cost trend.
+  /internal/v1/migrate:
+    post:
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                salaries: { type: array, items: { type: object } }
+                periods: { type: array, items: { type: object } }
+                payslips: { type: array, items: { type: object } }
+                adjustments: { type: array, items: { type: object } }
+                advances: { type: array, items: { type: object } }
+      responses:
+        "201":
+          description: Imported a migration batch.
+        "400":
+          description: Invalid migration batch.
+  /internal/v1/migration-records/{collection}:
+    get:
+      parameters:
+        - name: collection
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [salaries, periods, payslips, adjustments, advances]
+        - name: ids
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Comma-separated IDs, up to 100.
+      responses:
+        "200":
+          description: Imported records used to verify the migration.
+components:
+  securitySchemes:
+    InternalServiceToken:
+      type: apiKey
+      in: header
+      name: X-Internal-Service-Token
+  parameters:
+    EmployeeId:
+      name: employeeId
+      in: path
+      required: true
+      schema:
+        type: integer
+    PeriodId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: integer
+    RecordId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: integer
+  responses:
+    Unauthorized:
+      description: Missing or invalid internal service token.

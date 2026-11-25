@@ -66,6 +66,15 @@ async function run() {
   const employeePort = Number(process.env.EMPLOYEE_PORT ?? 3002);
   const employeeHost = process.env.EMPLOYEE_HOST ?? '127.0.0.1';
   const employeeUrl = process.env.EMPLOYEE_SERVICE_URL ?? `http://${employeeHost}:${employeePort}`;
+  const leavePort = Number(process.env.LEAVE_PORT ?? 3004);
+  const leaveHost = process.env.LEAVE_HOST ?? '127.0.0.1';
+  const leaveUrl = process.env.LEAVE_SERVICE_URL ?? `http://${leaveHost}:${leavePort}`;
+  const attendancePort = Number(process.env.ATTENDANCE_PORT ?? 3003);
+  const attendanceHost = process.env.ATTENDANCE_HOST ?? '127.0.0.1';
+  const attendanceUrl = process.env.ATTENDANCE_SERVICE_URL ?? `http://${attendanceHost}:${attendancePort}`;
+  const payrollPort = Number(process.env.PAYROLL_PORT ?? 3005);
+  const payrollHost = process.env.PAYROLL_HOST ?? '127.0.0.1';
+  const payrollUrl = process.env.PAYROLL_SERVICE_URL ?? `http://${payrollHost}:${payrollPort}`;
   const corePort = Number(process.env.CORE_PORT ?? 3100);
   const coreHost = process.env.CORE_HOST ?? '127.0.0.1';
   const coreUrl = process.env.CORE_SERVICE_URL ?? `http://${coreHost}:${corePort}`;
@@ -76,6 +85,9 @@ async function run() {
       'CONFIG_DB_FILE', 'CONFIG_PORT', 'CONFIG_HOST', 'CONFIG_SERVICE_URL', 'CONFIG_SERVICE_TIMEOUT_MS',
       'IDENTITY_DB_FILE', 'IDENTITY_PORT', 'IDENTITY_HOST', 'IDENTITY_SERVICE_URL', 'IDENTITY_SERVICE_TIMEOUT_MS',
       'EMPLOYEE_DB_FILE', 'EMPLOYEE_PORT', 'EMPLOYEE_HOST', 'EMPLOYEE_SERVICE_URL', 'EMPLOYEE_SERVICE_TIMEOUT_MS',
+      'LEAVE_DB_FILE', 'LEAVE_PORT', 'LEAVE_HOST', 'LEAVE_SERVICE_URL', 'LEAVE_SERVICE_TIMEOUT_MS',
+      'ATTENDANCE_DB_FILE', 'ATTENDANCE_PORT', 'ATTENDANCE_HOST', 'ATTENDANCE_SERVICE_URL', 'ATTENDANCE_SERVICE_TIMEOUT_MS',
+      'PAYROLL_DB_FILE', 'PAYROLL_PORT', 'PAYROLL_HOST', 'PAYROLL_SERVICE_URL', 'PAYROLL_SERVICE_TIMEOUT_MS',
     ]),
     EMAIL_PORT: String(emailPort),
     EMAIL_HOST: emailHost,
@@ -88,6 +100,12 @@ async function run() {
   let identityExit: Promise<ExitResult> | undefined;
   let employee: ChildProcess | undefined;
   let employeeExit: Promise<ExitResult> | undefined;
+  let leave: ChildProcess | undefined;
+  let leaveExit: Promise<ExitResult> | undefined;
+  let attendance: ChildProcess | undefined;
+  let attendanceExit: Promise<ExitResult> | undefined;
+  let payroll: ChildProcess | undefined;
+  let payrollExit: Promise<ExitResult> | undefined;
   let core: ChildProcess | undefined;
   let coreExit: Promise<ExitResult> | undefined;
   let gateway: ChildProcess | undefined;
@@ -98,6 +116,9 @@ async function run() {
     if (core && core.exitCode === null) core.kill(signal);
     if (identity && identity.exitCode === null) identity.kill(signal);
     if (employee && employee.exitCode === null) employee.kill(signal);
+    if (leave && leave.exitCode === null) leave.kill(signal);
+    if (attendance && attendance.exitCode === null) attendance.kill(signal);
+    if (payroll && payroll.exitCode === null) payroll.kill(signal);
     if (config && config.exitCode === null) config.kill(signal);
     if (email.exitCode === null) email.kill(signal);
   };
@@ -118,6 +139,9 @@ async function run() {
         'PORT', 'GATEWAY_HOST', 'GATEWAY_TRUST_PROXY', 'GATEWAY_TIMEOUT_MS',
         'IDENTITY_DB_FILE', 'IDENTITY_PORT', 'IDENTITY_HOST', 'IDENTITY_SERVICE_URL', 'IDENTITY_SERVICE_TIMEOUT_MS',
         'EMPLOYEE_DB_FILE', 'EMPLOYEE_PORT', 'EMPLOYEE_HOST', 'EMPLOYEE_SERVICE_URL', 'EMPLOYEE_SERVICE_TIMEOUT_MS',
+        'LEAVE_DB_FILE', 'LEAVE_PORT', 'LEAVE_HOST', 'LEAVE_SERVICE_URL', 'LEAVE_SERVICE_TIMEOUT_MS',
+        'ATTENDANCE_DB_FILE', 'ATTENDANCE_PORT', 'ATTENDANCE_HOST', 'ATTENDANCE_SERVICE_URL', 'ATTENDANCE_SERVICE_TIMEOUT_MS',
+        'PAYROLL_DB_FILE', 'PAYROLL_PORT', 'PAYROLL_HOST', 'PAYROLL_SERVICE_URL', 'PAYROLL_SERVICE_TIMEOUT_MS',
       ]),
       CONFIG_PORT: String(configPort),
       CONFIG_HOST: configHost,
@@ -134,6 +158,9 @@ async function run() {
         'IDENTITY_DB_FILE', 'IDENTITY_PORT', 'IDENTITY_HOST', 'IDENTITY_SERVICE_URL',
         'PORT', 'GATEWAY_HOST', 'GATEWAY_TRUST_PROXY', 'GATEWAY_TIMEOUT_MS',
         'SMTP_HOST', 'SMTP_PORT', 'SMTP_SECURE', 'SMTP_USER', 'SMTP_PASS', 'SMTP_FROM',
+        'ATTENDANCE_DB_FILE', 'ATTENDANCE_PORT', 'ATTENDANCE_HOST', 'ATTENDANCE_SERVICE_URL', 'ATTENDANCE_SERVICE_TIMEOUT_MS',
+        'LEAVE_DB_FILE', 'LEAVE_PORT', 'LEAVE_HOST', 'LEAVE_SERVICE_URL', 'LEAVE_SERVICE_TIMEOUT_MS',
+        'PAYROLL_DB_FILE', 'PAYROLL_PORT', 'PAYROLL_HOST', 'PAYROLL_SERVICE_URL', 'PAYROLL_SERVICE_TIMEOUT_MS',
       ]),
       EMPLOYEE_PORT: String(employeePort),
       EMPLOYEE_HOST: employeeHost,
@@ -141,6 +168,74 @@ async function run() {
     });
     employeeExit = trackExit(employee, 'Employee Service');
     await waitForService(new URL('/health', employeeUrl).toString(), 'Employee Service', employeeExit);
+    leave = startNode('leave-main.js', {
+      ...withoutEnv(process.env, [
+        'DB_FILE', 'JWT_SECRET', 'APP_URL', 'CORE_PORT', 'CORE_HOST', 'CORE_SERVICE_URL',
+        'EMAIL_DB_FILE', 'EMAIL_PORT', 'EMAIL_HOST', 'EMAIL_SERVICE_URL',
+        'CONFIG_DB_FILE', 'CONFIG_PORT', 'CONFIG_HOST', 'CONFIG_SERVICE_URL', 'CONFIG_SERVICE_TIMEOUT_MS',
+        'IDENTITY_DB_FILE', 'IDENTITY_PORT', 'IDENTITY_HOST', 'IDENTITY_SERVICE_URL',
+        'EMPLOYEE_DB_FILE', 'EMPLOYEE_PORT', 'EMPLOYEE_HOST', 'EMPLOYEE_SERVICE_URL',
+        'ATTENDANCE_DB_FILE', 'ATTENDANCE_PORT', 'ATTENDANCE_HOST', 'ATTENDANCE_SERVICE_URL',
+        'LEAVE_DB_FILE', 'LEAVE_PORT', 'LEAVE_HOST', 'LEAVE_SERVICE_URL', 'LEAVE_SERVICE_TIMEOUT_MS',
+        'PAYROLL_DB_FILE', 'PAYROLL_PORT', 'PAYROLL_HOST', 'PAYROLL_SERVICE_URL', 'PAYROLL_SERVICE_TIMEOUT_MS',
+        'PORT', 'GATEWAY_HOST', 'GATEWAY_TRUST_PROXY', 'GATEWAY_TIMEOUT_MS',
+        'SMTP_HOST', 'SMTP_PORT', 'SMTP_SECURE', 'SMTP_USER', 'SMTP_PASS', 'SMTP_FROM',
+      ]),
+      LEAVE_PORT: String(leavePort),
+      LEAVE_HOST: leaveHost,
+      LEAVE_SERVICE_URL: leaveUrl,
+      LEAVE_SERVICE_TIMEOUT_MS: process.env.LEAVE_SERVICE_TIMEOUT_MS ?? '3000',
+      INTERNAL_SERVICE_TOKEN: internalToken,
+    });
+    leaveExit = trackExit(leave, 'Leave Service');
+    await waitForService(new URL('/health', leaveUrl).toString(), 'Leave Service', leaveExit);
+    attendance = startNode('attendance-main.js', {
+      ...withoutEnv(process.env, [
+        'DB_FILE', 'JWT_SECRET', 'APP_URL', 'CORE_PORT', 'CORE_HOST', 'CORE_SERVICE_URL',
+        'PORT', 'GATEWAY_HOST', 'GATEWAY_TRUST_PROXY',
+        'GATEWAY_TIMEOUT_MS', 'EMAIL_DB_FILE', 'EMAIL_PORT', 'EMAIL_HOST', 'EMAIL_SERVICE_URL',
+        'CONFIG_DB_FILE', 'CONFIG_PORT', 'CONFIG_HOST', 'IDENTITY_DB_FILE', 'IDENTITY_PORT',
+        'IDENTITY_HOST', 'IDENTITY_SERVICE_URL', 'EMPLOYEE_DB_FILE', 'EMPLOYEE_PORT',
+        'EMPLOYEE_HOST', 'EMPLOYEE_SERVICE_URL', 'ATTENDANCE_DB_FILE', 'ATTENDANCE_PORT',
+        'ATTENDANCE_HOST', 'ATTENDANCE_SERVICE_URL', 'ATTENDANCE_SERVICE_TIMEOUT_MS',
+        'LEAVE_DB_FILE', 'LEAVE_PORT', 'LEAVE_HOST', 'LEAVE_SERVICE_URL', 'LEAVE_SERVICE_TIMEOUT_MS',
+        'PAYROLL_DB_FILE', 'PAYROLL_PORT', 'PAYROLL_HOST', 'PAYROLL_SERVICE_URL', 'PAYROLL_SERVICE_TIMEOUT_MS',
+        'SMTP_HOST', 'SMTP_PORT', 'SMTP_SECURE', 'SMTP_USER', 'SMTP_PASS', 'SMTP_FROM',
+      ]),
+      ATTENDANCE_PORT: String(attendancePort),
+      ATTENDANCE_HOST: attendanceHost,
+      ATTENDANCE_SERVICE_URL: attendanceUrl,
+      ATTENDANCE_SERVICE_TIMEOUT_MS: process.env.ATTENDANCE_SERVICE_TIMEOUT_MS ?? '3000',
+      CONFIG_SERVICE_URL: configUrl,
+      LEAVE_SERVICE_URL: leaveUrl,
+      LEAVE_SERVICE_TIMEOUT_MS: process.env.LEAVE_SERVICE_TIMEOUT_MS ?? '3000',
+      INTERNAL_SERVICE_TOKEN: internalToken,
+    });
+    attendanceExit = trackExit(attendance, 'Attendance Service');
+    await waitForService(new URL('/health', attendanceUrl).toString(), 'Attendance Service', attendanceExit);
+    payroll = startNode('payroll-main.js', {
+      ...withoutEnv(process.env, [
+        'DB_FILE', 'JWT_SECRET', 'APP_URL', 'CORE_PORT', 'CORE_HOST', 'CORE_SERVICE_URL',
+        'PORT', 'GATEWAY_HOST', 'GATEWAY_TRUST_PROXY', 'GATEWAY_TIMEOUT_MS',
+        'EMAIL_DB_FILE', 'EMAIL_PORT', 'EMAIL_HOST', 'EMAIL_SERVICE_URL', 'EMAIL_SERVICE_TIMEOUT_MS',
+        'NOTIFICATION_SERVICE_TIMEOUT_MS', 'SMTP_HOST', 'SMTP_PORT', 'SMTP_SECURE', 'SMTP_USER', 'SMTP_PASS', 'SMTP_FROM',
+        'CONFIG_DB_FILE', 'CONFIG_PORT', 'CONFIG_HOST', 'IDENTITY_DB_FILE', 'IDENTITY_PORT', 'IDENTITY_HOST',
+        'IDENTITY_SERVICE_URL', 'IDENTITY_SERVICE_TIMEOUT_MS',
+        'LEAVE_DB_FILE', 'LEAVE_PORT', 'LEAVE_HOST', 'LEAVE_SERVICE_URL',
+        'ATTENDANCE_DB_FILE', 'ATTENDANCE_PORT', 'ATTENDANCE_HOST', 'ATTENDANCE_SERVICE_URL',
+      ]),
+      PAYROLL_PORT: String(payrollPort),
+      PAYROLL_HOST: payrollHost,
+      PAYROLL_SERVICE_URL: payrollUrl,
+      PAYROLL_SERVICE_TIMEOUT_MS: process.env.PAYROLL_SERVICE_TIMEOUT_MS ?? '3000',
+      CONFIG_SERVICE_URL: configUrl,
+      EMPLOYEE_SERVICE_URL: employeeUrl,
+      ATTENDANCE_SERVICE_URL: attendanceUrl,
+      LEAVE_SERVICE_URL: leaveUrl,
+      INTERNAL_SERVICE_TOKEN: internalToken,
+    });
+    payrollExit = trackExit(payroll, 'Payroll Service');
+    await waitForService(new URL('/health', payrollUrl).toString(), 'Payroll Service', payrollExit);
     identity = startNode('identity-main.js', {
       ...withoutEnv(process.env, [
         'DB_FILE', 'EMAIL_DB_FILE', 'CONFIG_DB_FILE', 'PORT', 'GATEWAY_HOST',
@@ -148,6 +243,9 @@ async function run() {
         'SMTP_HOST', 'SMTP_PORT', 'SMTP_SECURE', 'SMTP_USER', 'SMTP_PASS', 'SMTP_FROM',
         'GATEWAY_TRUST_PROXY', 'GATEWAY_TIMEOUT_MS',
         'EMPLOYEE_DB_FILE', 'EMPLOYEE_PORT', 'EMPLOYEE_HOST', 'EMPLOYEE_SERVICE_URL', 'EMPLOYEE_SERVICE_TIMEOUT_MS',
+        'ATTENDANCE_DB_FILE', 'ATTENDANCE_PORT', 'ATTENDANCE_HOST', 'ATTENDANCE_SERVICE_URL', 'ATTENDANCE_SERVICE_TIMEOUT_MS',
+        'LEAVE_DB_FILE', 'LEAVE_PORT', 'LEAVE_HOST', 'LEAVE_SERVICE_URL', 'LEAVE_SERVICE_TIMEOUT_MS',
+        'PAYROLL_DB_FILE', 'PAYROLL_PORT', 'PAYROLL_HOST', 'PAYROLL_SERVICE_URL', 'PAYROLL_SERVICE_TIMEOUT_MS',
       ]),
       IDENTITY_PORT: String(identityPort),
       IDENTITY_HOST: identityHost,
@@ -166,6 +264,9 @@ async function run() {
         'CONFIG_DB_FILE', 'CONFIG_PORT', 'CONFIG_HOST',
         'JWT_SECRET', 'IDENTITY_DB_FILE', 'IDENTITY_PORT', 'IDENTITY_HOST',
         'EMPLOYEE_DB_FILE', 'EMPLOYEE_PORT', 'EMPLOYEE_HOST',
+        'ATTENDANCE_DB_FILE', 'ATTENDANCE_PORT', 'ATTENDANCE_HOST',
+        'LEAVE_DB_FILE', 'LEAVE_PORT', 'LEAVE_HOST',
+        'PAYROLL_DB_FILE', 'PAYROLL_PORT', 'PAYROLL_HOST',
       ]),
       CORE_PORT: String(corePort),
       CORE_HOST: coreHost,
@@ -173,6 +274,10 @@ async function run() {
       CONFIG_SERVICE_URL: configUrl,
       IDENTITY_SERVICE_URL: identityUrl,
       EMPLOYEE_SERVICE_URL: employeeUrl,
+      LEAVE_SERVICE_URL: leaveUrl,
+      ATTENDANCE_SERVICE_URL: attendanceUrl,
+      PAYROLL_SERVICE_URL: payrollUrl,
+      PAYROLL_SERVICE_TIMEOUT_MS: process.env.PAYROLL_SERVICE_TIMEOUT_MS ?? '3000',
       INTERNAL_SERVICE_TOKEN: internalToken,
     });
     coreExit = trackExit(core, 'Core Service');
@@ -185,13 +290,16 @@ async function run() {
         'CONFIG_DB_FILE', 'CONFIG_PORT', 'CONFIG_HOST', 'CONFIG_SERVICE_URL', 'CONFIG_SERVICE_TIMEOUT_MS',
         'IDENTITY_DB_FILE', 'IDENTITY_PORT', 'IDENTITY_HOST',
         'EMPLOYEE_DB_FILE', 'EMPLOYEE_PORT', 'EMPLOYEE_HOST', 'EMPLOYEE_SERVICE_URL', 'EMPLOYEE_SERVICE_TIMEOUT_MS',
+        'ATTENDANCE_DB_FILE', 'ATTENDANCE_PORT', 'ATTENDANCE_HOST', 'ATTENDANCE_SERVICE_URL', 'ATTENDANCE_SERVICE_TIMEOUT_MS',
+        'LEAVE_DB_FILE', 'LEAVE_PORT', 'LEAVE_HOST', 'LEAVE_SERVICE_URL', 'LEAVE_SERVICE_TIMEOUT_MS',
+        'PAYROLL_DB_FILE', 'PAYROLL_PORT', 'PAYROLL_HOST', 'PAYROLL_SERVICE_URL', 'PAYROLL_SERVICE_TIMEOUT_MS',
       ]),
       CORE_SERVICE_URL: coreUrl,
       IDENTITY_SERVICE_URL: identityUrl,
       PORT: process.env.PORT ?? '3000',
     });
     gatewayExit = trackExit(gateway, 'API Gateway');
-    const exits = [emailExit, configExit, employeeExit, identityExit, coreExit, gatewayExit];
+    const exits = [emailExit, configExit, employeeExit, leaveExit, attendanceExit, payrollExit, identityExit, coreExit, gatewayExit];
     const result = await Promise.race(exits);
     stop('SIGTERM');
     await Promise.all(exits);
@@ -203,6 +311,9 @@ async function run() {
     if (core && core.exitCode === null) core.kill('SIGTERM');
     if (identity && identity.exitCode === null) identity.kill('SIGTERM');
     if (employee && employee.exitCode === null) employee.kill('SIGTERM');
+    if (leave && leave.exitCode === null) leave.kill('SIGTERM');
+    if (attendance && attendance.exitCode === null) attendance.kill('SIGTERM');
+    if (payroll && payroll.exitCode === null) payroll.kill('SIGTERM');
     if (config && config.exitCode === null) config.kill('SIGTERM');
     if (email.exitCode === null) email.kill('SIGTERM');
   }

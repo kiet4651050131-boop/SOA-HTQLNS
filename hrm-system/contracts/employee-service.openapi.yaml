@@ -19,7 +19,9 @@ paths:
       operationId: listEmployees
       parameters:
         - { name: email, in: query, schema: { type: string, format: email } }
+        - { name: emails, in: query, schema: { type: string }, description: Comma-separated email addresses }
         - { name: ids, in: query, schema: { type: string }, description: Comma-separated employee IDs }
+        - { name: codes, in: query, schema: { type: string }, description: Comma-separated employee codes }
         - { name: department_id, in: query, schema: { type: integer, minimum: 1 } }
         - { name: q, in: query, schema: { type: string } }
         - { name: scope_email, in: query, schema: { type: string, format: email } }
@@ -48,24 +50,6 @@ paths:
         '200': { description: Employee record }
         '401': { description: Internal service token is missing or invalid }
         '404': { description: Employee not found }
-  /internal/v1/employees/{id}/phone:
-    put:
-      operationId: updateEmployeePhone
-      parameters:
-        - { name: id, in: path, required: true, schema: { type: integer, minimum: 1 } }
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [phone]
-              properties:
-                phone: { type: string }
-      responses:
-        '200': { description: Employee phone updated }
-        '401': { description: Internal service token is missing or invalid }
-        '404': { description: Employee not found }
     put:
       operationId: updateEmployee
       parameters:
@@ -89,6 +73,24 @@ paths:
         '200': { description: Employee deleted }
         '401': { description: Internal service token is missing or invalid }
         '404': { description: Employee not found }
+  /internal/v1/employees/{id}/phone:
+    put:
+      operationId: updateEmployeePhone
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer, minimum: 1 } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [phone]
+              properties:
+                phone: { type: string }
+      responses:
+        '200': { description: Employee phone updated }
+        '401': { description: Internal service token is missing or invalid }
+        '404': { description: Employee not found }
   /internal/v1/employees/ensure:
     post:
       operationId: ensureEmployee
@@ -110,6 +112,17 @@ paths:
     post:
       operationId: migrateEmployeeData
       description: Idempotently imports legacy employee and organization rows in batches of at most 500.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                departments: { type: array, items: { $ref: '#/components/schemas/OrganizationRecord' } }
+                positions: { type: array, items: { $ref: '#/components/schemas/OrganizationRecord' } }
+                employees: { type: array, items: { $ref: '#/components/schemas/LegacyEmployee' } }
+                employee_history: { type: array, items: { $ref: '#/components/schemas/EmployeeHistoryRecord' } }
       responses:
         '201': { description: Legacy data imported }
         '400': { description: Invalid migration batch }
@@ -215,6 +228,32 @@ components:
       in: header
       name: X-Internal-Service-Token
   schemas:
+    OrganizationRecord:
+      type: object
+      required: [id, name]
+      properties:
+        id: { type: integer, minimum: 1 }
+        name: { type: string, minLength: 1 }
+    LegacyEmployee:
+      allOf:
+        - { $ref: '#/components/schemas/EmployeeInput' }
+        - type: object
+          required: [id]
+          properties:
+            id: { type: integer, minimum: 1 }
+            created_at: { type: string }
+    EmployeeHistoryRecord:
+      type: object
+      required: [id, entity, changes]
+      properties:
+        id: { type: integer, minimum: 1 }
+        employee_id: { type: [integer, 'null'] }
+        employee_code: { type: string }
+        employee_name: { type: string }
+        entity: { type: string }
+        actor_email: { type: string }
+        changes: { type: string }
+        created_at: { type: string }
     EmployeeInput:
       type: object
       required: [code, name, email]

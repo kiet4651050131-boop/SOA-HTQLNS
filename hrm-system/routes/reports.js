@@ -1,21 +1,17 @@
 const router = require('express').Router();
-const { db } = require('../db');
-const { auth } = require('../middleware');
+const { auth, wrap } = require('../middleware');
 const L = require('../lib');
+const { organization } = require('../employee-client');
+const { summarizeEmployees } = require('../attendance-client');
+const { reportForEmployees } = require('../leave-client');
+const { payrollCost } = require('../payroll-client');
 
 router.use(auth);
 
-function getData(user, month, departmentId) {
+async function getData(user, month, departmentId) {
   const { from, to } = L.monthRange(month);
-  const scope = L.scopeSql(user);
-  let filter = `1=1${scope.sql}`;
-  const args = [...scope.args];
-  if (departmentId) {
-    filter += ' AND e.department_id = ?';
-    args.push(departmentId);
-  }
-  const employees = db.prepare(`SELECT e.*, d.name AS department FROM employees e
-    LEFT JOIN departments d ON d.id = e.department_id WHERE ${filter} ORDER BY e.code`).all(...args);
+  const filters = departmentId ? { department_id: departmentId } : {};
+  const employees = await L.employeesInScope(user, filters);
   const active = employees.filter((employee) => employee.status !== 'Nghỉ việc');
   const byDepartment = {};
   const byStatus = {};
@@ -23,31 +19,20 @@ function getData(user, month, departmentId) {
     const department = employee.department || 'Chưa phân bổ';
     byDepartment[department] = (byDepartment[department] || 0) + 1;
   });
-  employees.forEach((employee) => {
-    byStatus[employee.status] = (byStatus[employee.status] || 0) + 1;
-  });
+  employees.forEach((employee) => { byStatus[employee.status] = (byStatus[employee.status] || 0) + 1; });
+
   const attendance = { present: 0, paid_leave: 0, unpaid_leave: 0, absent: 0, late: 0, missing_checkout: 0 };
-  active.forEach((employee) => {
-    const summary = L.summarize(employee, month, L.getSettings()).summary;
+  const attendanceSummaries = await summarizeEmployees(month, active);
+  attendanceSummaries.forEach(({ summary }) => {
     Object.keys(attendance).forEach((key) => { attendance[key] += summary[key] || 0; });
   });
 
-  const leave = db.prepare(`SELECT r.status, COUNT(*) AS requests, COALESCE(SUM(r.days),0) AS days
-    FROM leave_requests r JOIN employees e ON e.id = r.employee_id
-    WHERE r.from_date <= ? AND r.to_date >= ? AND ${filter}
-    GROUP BY r.status ORDER BY r.status`).all(to, from, ...args);
-  const overtime = db.prepare(`SELECT COUNT(*) AS requests, COALESCE(SUM(o.hours),0) AS hours
-    FROM overtime_requests o JOIN employees e ON e.id = o.employee_id
-    WHERE o.date BETWEEN ? AND ? AND o.status = 'Đã duyệt' AND ${filter}`)
-    .get(from, to, ...args);
+  const leaveAndOvertime = employees.length
+    ? await reportForEmployees(employees.map((employee) => employee.id), from, to)
+    : { leave: [], overtime: { requests: 0, hours: 0 } };
   let payroll = [];
   if (L.isHr(user)) {
-    let payrollSql = `SELECT s.department, COUNT(*) AS headcount, SUM(s.gross) AS gross, SUM(s.net) AS net
-      FROM payslips s JOIN payroll_periods p ON p.id = s.period_id
-      WHERE p.month = ? AND p.status = 'Đã chốt'`;
-    const payrollArgs = [month];
-    if (departmentId) { payrollSql += ' AND s.department = (SELECT name FROM departments WHERE id = ?)'; payrollArgs.push(departmentId); }
-    payroll = db.prepare(payrollSql + ' GROUP BY s.department ORDER BY s.department').all(...payrollArgs);
+    payroll = await payrollCost(month, departmentId ? employees[0]?.department || '' : undefined);
   }
   return {
     month,
@@ -55,13 +40,13 @@ function getData(user, month, departmentId) {
     by_department: Object.entries(byDepartment).map(([name, count]) => ({ name, count })),
     by_status: Object.entries(byStatus).map(([name, count]) => ({ name, count })),
     attendance,
-    overtime,
-    leave,
+    overtime: leaveAndOvertime.overtime,
+    leave: leaveAndOvertime.leave,
     payroll,
   };
 }
 
-function params(req, res) {
+async function params(req, res) {
   const month = String(req.query.month || L.curMonth());
   if (!L.validMonth(month)) {
     res.status(400).json({ error: 'Tháng không hợp lệ (YYYY-MM)' });
@@ -70,7 +55,8 @@ function params(req, res) {
   let departmentId = null;
   if (req.query.department_id) {
     departmentId = Number(req.query.department_id);
-    if (!Number.isInteger(departmentId) || !db.prepare('SELECT 1 FROM departments WHERE id = ?').get(departmentId)) {
+    const departments = await organization('departments');
+    if (!Number.isInteger(departmentId) || !departments.some((department) => department.id === departmentId)) {
       res.status(400).json({ error: 'Phòng ban không hợp lệ' });
       return null;
     }
@@ -78,12 +64,12 @@ function params(req, res) {
   return { month, departmentId };
 }
 
-router.get('/', (req, res) => {
+router.get('/', wrap(async (req, res) => {
   if (req.user.role === 'employee') return res.status(403).json({ error: 'Bạn không đủ quyền xem báo cáo HR' });
-  const query = params(req, res);
+  const query = await params(req, res);
   if (!query) return;
-  res.json(getData(req.user, query.month, query.departmentId));
-});
+  res.json(await getData(req.user, query.month, query.departmentId));
+}));
 
 const csvCell = (value) => {
   let text = String(value == null ? '' : value);
@@ -91,11 +77,11 @@ const csvCell = (value) => {
   return /[",\n;]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
 };
 
-router.get('/export', (req, res) => {
+router.get('/export', wrap(async (req, res) => {
   if (req.user.role === 'employee') return res.status(403).json({ error: 'Bạn không đủ quyền xuất báo cáo HR' });
-  const query = params(req, res);
+  const query = await params(req, res);
   if (!query) return;
-  const report = getData(req.user, query.month, query.departmentId);
+  const report = await getData(req.user, query.month, query.departmentId);
   const rows = [
     ['Báo cáo HR', query.month],
     [],
@@ -123,6 +109,6 @@ router.get('/export', (req, res) => {
     'Content-Disposition': `attachment; filename="bao-cao-hr-${query.month}.csv"`,
   });
   res.send('\uFEFF' + rows.map((row) => row.map(csvCell).join(',')).join('\r\n'));
-});
+}));
 
 module.exports = router;

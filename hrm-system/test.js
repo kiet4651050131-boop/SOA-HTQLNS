@@ -5,11 +5,17 @@ process.env.EMAIL_DB_FILE = ':memory:';
 process.env.CONFIG_DB_FILE = ':memory:';
 process.env.IDENTITY_DB_FILE = ':memory:';
 process.env.EMPLOYEE_DB_FILE = ':memory:';
+process.env.ATTENDANCE_DB_FILE = ':memory:';
+process.env.LEAVE_DB_FILE = ':memory:';
+process.env.PAYROLL_DB_FILE = ':memory:';
 process.env.INTERNAL_SERVICE_TOKEN = 'test-internal-service-token';
 process.env.NOTIFICATION_SERVICE_TIMEOUT_MS = '200';
 process.env.CONFIG_SERVICE_TIMEOUT_MS = '200';
 process.env.IDENTITY_SERVICE_TIMEOUT_MS = '3000';
 process.env.EMPLOYEE_SERVICE_TIMEOUT_MS = '200';
+process.env.ATTENDANCE_SERVICE_TIMEOUT_MS = '200';
+process.env.LEAVE_SERVICE_TIMEOUT_MS = '200';
+process.env.PAYROLL_SERVICE_TIMEOUT_MS = '200';
 for (const key of ['SMTP_HOST', 'SMTP_PORT', 'SMTP_SECURE', 'SMTP_USER', 'SMTP_PASS', 'SMTP_FROM', 'APP_URL']) {
   process.env[key] = '';
 }
@@ -24,12 +30,37 @@ const { createEmailApp } = require('./dist/email-main');
 const { createConfigApp } = require('./dist/config-main');
 const { createIdentityApp } = require('./dist/identity-main');
 const { createEmployeeApp } = require('./dist/employee-main');
+const { createAttendanceApp } = require('./dist/attendance-main');
+const { createLeaveApp } = require('./dist/leave-main');
+const { createPayrollApp } = require('./dist/payroll-main');
+const { payrollPeriod, payrollPayslips, payrollAdjustments, payrollAdvances, payrollSalaries } = require('./payroll-client');
 const L = require('./lib');
 
 (async () => {
   const { db } = require('./db');
   const legacyResetToken = 'a'.repeat(64);
   const passwordHash = await bcrypt.hash('secret1234', 10);
+  db.exec(`CREATE TABLE departments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE COLLATE NOCASE
+  );
+  CREATE TABLE positions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE COLLATE NOCASE
+  );
+  CREATE TABLE employees (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, code TEXT NOT NULL UNIQUE, name TEXT NOT NULL,
+    email TEXT NOT NULL UNIQUE, phone TEXT NOT NULL DEFAULT '',
+    department_id INTEGER REFERENCES departments(id) ON DELETE RESTRICT,
+    position_id INTEGER REFERENCES positions(id) ON DELETE RESTRICT,
+    status TEXT NOT NULL DEFAULT 'Thử việc', start_date TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+  );
+  CREATE TABLE employee_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, employee_id INTEGER, employee_code TEXT NOT NULL,
+    employee_name TEXT NOT NULL, entity TEXT NOT NULL, actor_email TEXT NOT NULL,
+    changes TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+  );
+  INSERT INTO departments(id, name) VALUES (1, 'Kinh doanh'), (2, 'Kỹ thuật'), (3, 'Hành chính');
+  INSERT INTO positions(id, name) VALUES (1, 'Nhân viên'), (2, 'Trưởng nhóm'), (3, 'Giám đốc');`);
   db.exec(`CREATE TABLE users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     email TEXT NOT NULL UNIQUE,
@@ -49,6 +80,101 @@ const L = require('./lib');
     .run(createHash('sha256').update(legacyResetToken).digest('hex'), 1, Date.now() + 60 * 60 * 1000);
   db.prepare(`INSERT INTO employees(code, name, email, status, start_date)
     VALUES ('NV001', 'Admin', 'admin@cty.vn', 'Chờ cập nhật', '')`).run();
+  db.exec(`CREATE TABLE attendances (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      employee_id INTEGER NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+      date TEXT NOT NULL, check_in TEXT, check_out TEXT, note TEXT NOT NULL DEFAULT '',
+      source TEXT NOT NULL DEFAULT 'web', UNIQUE (employee_id, date)
+    );
+    CREATE INDEX idx_att_date ON attendances(date);`);
+  db.prepare('INSERT INTO attendances(employee_id, date, check_in) VALUES (?, ?, ?)')
+    .run(1, '2019-01-01', '09:00');
+  db.exec(`CREATE TABLE leave_types (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE,
+    paid INTEGER NOT NULL DEFAULT 1, uses_quota INTEGER NOT NULL DEFAULT 0
+  );
+  CREATE TABLE leave_requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, employee_id INTEGER NOT NULL,
+    type_id INTEGER NOT NULL REFERENCES leave_types(id), from_date TEXT NOT NULL, to_date TEXT NOT NULL,
+    half INTEGER NOT NULL DEFAULT 0, days REAL NOT NULL, reason TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'Chờ HR', manager_note TEXT NOT NULL DEFAULT '',
+    decided_by TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+  );
+  CREATE TABLE overtime_requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, employee_id INTEGER NOT NULL, date TEXT NOT NULL,
+    hours REAL NOT NULL, reason TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'Chờ HR',
+    manager_note TEXT NOT NULL DEFAULT '', decided_by TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+  );
+  INSERT INTO leave_types(id, name, paid, uses_quota)
+    VALUES (1, 'Phép năm', 1, 1), (2, 'Nghỉ ốm', 1, 0), (3, 'Nghỉ không lương', 0, 0);
+  INSERT INTO leave_requests(id, employee_id, type_id, from_date, to_date, half, days, reason, status,
+    manager_note, decided_by, created_at)
+    VALUES (9000, 1, 1, '2020-01-02', '2020-01-02', 0, 1, 'legacy-leave-migration',
+      'Đã duyệt', '', 'admin@cty.vn', '2020-01-01 08:00:00');
+  INSERT INTO overtime_requests(id, employee_id, date, hours, reason, status, manager_note, decided_by, created_at)
+    VALUES (9000, 1, '2020-01-03', 2, 'legacy-overtime-migration', 'Đã duyệt', '',
+      'admin@cty.vn', '2020-01-02 08:00:00');`);
+  db.exec('PRAGMA foreign_keys = OFF');
+  db.exec(`CREATE TABLE employee_salary (
+    employee_id INTEGER PRIMARY KEY REFERENCES employees(id) ON DELETE CASCADE,
+    base_salary INTEGER NOT NULL DEFAULT 0,
+    allowance INTEGER NOT NULL DEFAULT 0, exempt_allowance INTEGER NOT NULL DEFAULT 0,
+    dependents INTEGER NOT NULL DEFAULT 0, insured INTEGER NOT NULL DEFAULT 1,
+    insured_salary INTEGER NOT NULL DEFAULT 0
+  );
+  CREATE TABLE payroll_periods (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, month TEXT NOT NULL UNIQUE,
+    status TEXT NOT NULL DEFAULT 'Nháp', created_by TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')), locked_at TEXT
+  );
+  CREATE TABLE payslips (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    period_id INTEGER NOT NULL REFERENCES payroll_periods(id) ON DELETE CASCADE,
+    employee_id INTEGER NOT NULL REFERENCES employees(id) ON DELETE RESTRICT,
+    employee_code TEXT NOT NULL, employee_name TEXT NOT NULL,
+    department TEXT NOT NULL DEFAULT '', std_days REAL NOT NULL, paid_days REAL NOT NULL,
+    present_days REAL NOT NULL, paid_leave_days REAL NOT NULL, unpaid_leave_days REAL NOT NULL,
+    absent_days REAL NOT NULL,
+    base_salary INTEGER NOT NULL, allowance INTEGER NOT NULL,
+    gross INTEGER NOT NULL, insurance INTEGER NOT NULL, dependents INTEGER NOT NULL,
+    taxable INTEGER NOT NULL, tax INTEGER NOT NULL, net INTEGER NOT NULL,
+    bonus INTEGER NOT NULL DEFAULT 0, penalty INTEGER NOT NULL DEFAULT 0, advance INTEGER NOT NULL DEFAULT 0,
+    overtime_hours REAL NOT NULL DEFAULT 0, overtime_pay INTEGER NOT NULL DEFAULT 0,
+    UNIQUE (period_id, employee_id)
+  );
+  CREATE TABLE payroll_adjustments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    period_id INTEGER NOT NULL REFERENCES payroll_periods(id) ON DELETE CASCADE,
+    employee_id INTEGER NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+    type TEXT NOT NULL, amount INTEGER NOT NULL CHECK (amount > 0),
+    note TEXT NOT NULL DEFAULT '', created_by TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+  );
+  CREATE TABLE advance_requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    employee_id INTEGER NOT NULL REFERENCES employees(id) ON DELETE CASCADE, month TEXT NOT NULL,
+    amount INTEGER NOT NULL CHECK (amount > 0), note TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'Chờ duyệt', reviewed_by TEXT NOT NULL DEFAULT '',
+    review_note TEXT NOT NULL DEFAULT '',
+    adjustment_id INTEGER REFERENCES payroll_adjustments(id) ON DELETE SET NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')), decided_at TEXT
+  );
+  INSERT INTO employee_salary(employee_id, base_salary, allowance, exempt_allowance, dependents, insured, insured_salary)
+    VALUES (9000, 1000000, 100000, 0, 0, 1, 1000000);
+  INSERT INTO payroll_periods(id, month, status, created_by, created_at)
+    VALUES (9000, '2020-01', 'Nháp', 'admin@cty.vn', '2020-01-01 08:00:00');
+  INSERT INTO payslips(id, period_id, employee_id, employee_code, employee_name, department, std_days, paid_days,
+    present_days, paid_leave_days, unpaid_leave_days, absent_days, base_salary, allowance, gross, insurance,
+    dependents, taxable, tax, net, bonus, penalty, advance, overtime_hours, overtime_pay)
+    VALUES (9000, 9000, 9000, 'LEGACY9000', 'Legacy Payroll Fixture', '', 23, 23, 23, 0, 0, 0, 1000000, 100000,
+      1100000, 100000, 0, 0, 0, 1000000, 0, 0, 0, 0, 0);
+  INSERT INTO payroll_adjustments(id, period_id, employee_id, type, amount, note, created_by, created_at)
+    VALUES (9000, 9000, 9000, 'bonus', 5000, 'legacy-adjustment', 'admin@cty.vn', '2020-01-01 09:00:00');
+  INSERT INTO advance_requests(id, employee_id, month, amount, note, status, reviewed_by, review_note, created_at)
+    VALUES (9000, 9000, '2020-01', 1000, 'legacy-advance', 'Từ chối', 'admin@cty.vn', 'legacy-review',
+      '2020-01-02 09:00:00');`);
+  db.exec('PRAGMA foreign_keys = ON');
   db.exec(`CREATE TABLE audit_logs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
@@ -95,6 +221,18 @@ const L = require('./lib');
   await employeeApp.listen(0, '127.0.0.1');
   const employeeServer = employeeApp.getHttpServer();
   process.env.EMPLOYEE_SERVICE_URL = `http://127.0.0.1:${employeeServer.address().port}`;
+  const leaveApp = await createLeaveApp();
+  await leaveApp.listen(0, '127.0.0.1');
+  const leaveServer = leaveApp.getHttpServer();
+  process.env.LEAVE_SERVICE_URL = `http://127.0.0.1:${leaveServer.address().port}`;
+  const attendanceApp = await createAttendanceApp();
+  await attendanceApp.listen(0, '127.0.0.1');
+  const attendanceServer = attendanceApp.getHttpServer();
+  process.env.ATTENDANCE_SERVICE_URL = `http://127.0.0.1:${attendanceServer.address().port}`;
+  const payrollApp = await createPayrollApp();
+  await payrollApp.listen(0, '127.0.0.1');
+  const payrollServer = payrollApp.getHttpServer();
+  process.env.PAYROLL_SERVICE_URL = `http://127.0.0.1:${payrollServer.address().port}`;
   const nestApp = await createApp();
   await nestApp.listen(0);
   const srv = nestApp.getHttpServer();
@@ -113,8 +251,43 @@ const L = require('./lib');
   };
   let n = 0; const ok = (c, m) => { assert(c, m); n++; };
   ok(!db.prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table'
-    AND name IN ('audit_logs', 'notifications', 'settings', 'holidays', 'users', 'password_reset_tokens')`).get(),
-  'legacy communication, configuration, and identity tables are dropped after migration');
+    AND name IN ('audit_logs', 'notifications', 'settings', 'holidays', 'users', 'password_reset_tokens',
+      'employees', 'employee_history', 'departments', 'positions')`).get(),
+  'legacy communication, configuration, identity, and Employee tables are dropped after migration');
+  ok(!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'attendances'").get(),
+    'legacy Attendance table is removed from Core after migration');
+  ok(!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name IN ('leave_types', 'leave_requests', 'overtime_requests')").get(),
+    'legacy Leave and Overtime tables are removed from Core after migration');
+  ok(!db.prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table'
+    AND name IN ('employee_salary', 'payroll_periods', 'payslips', 'payroll_adjustments', 'advance_requests')`).get(),
+  'legacy Payroll tables are removed from Core after verified migration');
+  const migratedLeave = await fetch(`${process.env.LEAVE_SERVICE_URL}/internal/v1/leave/requests/by-record-ids?ids=9000`, {
+    headers: { 'X-Internal-Service-Token': process.env.INTERNAL_SERVICE_TOKEN },
+  });
+  const migratedLeaveRows = await migratedLeave.json();
+  ok(migratedLeave.status === 200 && migratedLeaveRows[0]?.reason === 'legacy-leave-migration',
+    'leave data migrates into the independent Leave database');
+  const migratedOvertime = await fetch(`${process.env.LEAVE_SERVICE_URL}/internal/v1/overtime/requests/by-record-ids?ids=9000`, {
+    headers: { 'X-Internal-Service-Token': process.env.INTERNAL_SERVICE_TOKEN },
+  });
+  const migratedOvertimeRows = await migratedOvertime.json();
+  ok(migratedOvertime.status === 200 && migratedOvertimeRows[0]?.reason === 'legacy-overtime-migration',
+    'overtime data migrates into the independent Leave database');
+  const migratedAttendance = await fetch(`${process.env.ATTENDANCE_SERVICE_URL}/internal/v1/attendance?employee_id=1&from=2019-01-01&to=2019-01-01`, {
+    headers: { 'X-Internal-Service-Token': process.env.INTERNAL_SERVICE_TOKEN },
+  });
+  ok(migratedAttendance.status === 200 && (await migratedAttendance.json())[0]?.check_in === '09:00',
+    'attendance data survives Employee foreign-key rebuild and migrates to its own service database');
+  const migratedPeriod = await payrollPeriod(9000);
+  const migratedSlips = await payrollPayslips(9000);
+  const migratedAdjustments = await payrollAdjustments(9000);
+  const migratedAdvances = await payrollAdvances(9000);
+  const migratedSalaries = await payrollSalaries([9000]);
+  ok(migratedPeriod.month === '2020-01' && migratedSlips[0]?.employee_code === 'LEGACY9000'
+    && migratedAdjustments[0]?.note === 'legacy-adjustment'
+    && migratedAdvances[0]?.note === 'legacy-advance'
+    && migratedSalaries[0]?.base_salary === 1000000,
+  'salary, period, payslip, adjustment, and advance records migrate intact to Payroll Service');
   const page = await fetch(`http://127.0.0.1:${srv.address().port}/`);
   ok(page.status === 200 && page.headers.get('content-type').includes('text/html'), 'NestJS host serves frontend');
   const gatewayPage = await fetch(gatewayBase + '/');
@@ -131,6 +304,12 @@ const L = require('./lib');
   ok(identityHealth.status === 200 && (await identityHealth.json()).service === 'hrm-identity-service', 'Identity service has independent health endpoint');
   const employeeHealth = await fetch(process.env.EMPLOYEE_SERVICE_URL + '/health');
   ok(employeeHealth.status === 200 && (await employeeHealth.json()).service === 'hrm-employee-service', 'Employee service has independent health endpoint');
+  const attendanceHealth = await fetch(process.env.ATTENDANCE_SERVICE_URL + '/health');
+  ok(attendanceHealth.status === 200 && (await attendanceHealth.json()).service === 'hrm-attendance-service', 'Attendance service has independent health endpoint');
+  const leaveHealth = await fetch(process.env.LEAVE_SERVICE_URL + '/health');
+  ok(leaveHealth.status === 200 && (await leaveHealth.json()).service === 'hrm-leave-service', 'Leave service has independent health endpoint');
+  const payrollHealth = await fetch(process.env.PAYROLL_SERVICE_URL + '/health');
+  ok(payrollHealth.status === 200 && (await payrollHealth.json()).service === 'hrm-payroll-service', 'Payroll service has independent health endpoint');
   const unauthorizedEmail = await fetch(process.env.EMAIL_SERVICE_URL + '/internal/v1/email', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -145,6 +324,12 @@ const L = require('./lib');
   ok(unauthorizedIdentity.status === 401, 'Identity service rejects unauthenticated internal calls');
   const unauthorizedEmployee = await fetch(process.env.EMPLOYEE_SERVICE_URL + '/internal/v1/employees');
   ok(unauthorizedEmployee.status === 401, 'Employee service rejects unauthenticated internal calls');
+  const unauthorizedAttendance = await fetch(process.env.ATTENDANCE_SERVICE_URL + '/internal/v1/attendance');
+  ok(unauthorizedAttendance.status === 401, 'Attendance service rejects unauthenticated internal calls');
+  const unauthorizedLeave = await fetch(process.env.LEAVE_SERVICE_URL + '/internal/v1/leave/types');
+  ok(unauthorizedLeave.status === 401, 'Leave service rejects unauthenticated internal calls');
+  const unauthorizedPayroll = await fetch(process.env.PAYROLL_SERVICE_URL + '/internal/v1/payroll/periods');
+  ok(unauthorizedPayroll.status === 401, 'Payroll service rejects unauthenticated internal calls');
   const migratedEmployee = await fetch(`${process.env.EMPLOYEE_SERVICE_URL}/internal/v1/employees?email=admin%40cty.vn`, {
     headers: { 'X-Internal-Service-Token': process.env.INTERNAL_SERVICE_TOKEN },
   });
@@ -173,12 +358,19 @@ const L = require('./lib');
     body: JSON.stringify({ code: 'SVC001', name: 'Duplicate', email: 'duplicate@cty.vn' }),
   });
   ok(duplicateEmployee.status === 409, 'Employee Service rejects duplicate employee codes');
+  const employeeDeleted = await fetch(`${process.env.EMPLOYEE_SERVICE_URL}/internal/v1/employees/${employeeCreatedBody.id}`, {
+    method: 'DELETE',
+    headers: employeeInternalHeaders,
+  });
+  ok(employeeDeleted.status === 200, 'Employee Service removes isolated integration-test employee');
   const unauthorizedEmployeeEnsure = await fetch(`${process.env.CORE_SERVICE_URL}/internal/v1/employees/ensure`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ name: 'No Key', email: 'no-key@example.com' }),
   });
   ok(unauthorizedEmployeeEnsure.status === 401, 'Core employee ensure rejects unauthenticated internal calls');
+  const removedCoreLeaveQuery = await fetch(`${process.env.CORE_SERVICE_URL}/internal/v1/leave/approved?ids=1&from=2020-01-01&to=2020-01-31`);
+  ok(removedCoreLeaveQuery.status === 404, 'Core no longer owns an internal Leave API after the service cutover');
   const gatewayStatus = await fetch(gatewayBase + '/api/auth/status');
   const gatewayStatusBody = await gatewayStatus.json();
   ok(gatewayStatus.status === 200 && gatewayStatusBody.registrationOpen === false,
@@ -304,7 +496,9 @@ const L = require('./lib');
   ok(spoofedIdentity.status === 403, 'Gateway overwrites forged identity headers with introspected claims');
 
   // Phan quyen xem ho so
-  ok((await call('GET', '/employees', null, A)).d.length === 3, 'admin thay tat ca');
+  const adminEmployees = await call('GET', '/employees', null, A);
+  ok(adminEmployees.s === 200 && adminEmployees.d.length === 3,
+    'admin thay tat ca');
   const mine = (await call('GET', '/employees', null, U1)).d;
   ok(mine.length === 1 && mine[0].email === 'an@cty.vn', 'nhan vien chi thay minh');
   ok((await call('GET', '/users', null, U1)).s === 403, 'employee khong xem tai khoan');
@@ -327,6 +521,25 @@ const L = require('./lib');
   ok((await call('PUT', '/employees/' + add.d.id, { name: 'Chau Nguyen' }, A)).s === 200, 'sua nhan vien');
   ok((await call('GET', '/employees?q=chau', null, A)).d[0].name === 'Chau Nguyen', 'tim kiem');
   ok((await call('GET', '/employees?department_id=' + dept.id, null, A)).d.length === 1, 'loc phong ban');
+  const protectedEmployee = await call('POST', '/employees', {
+    code: 'NVDEL', name: 'Delete Guard', email: 'delete-guard@cty.vn',
+  }, A);
+  ok(protectedEmployee.s === 201, 'employee for related-data deletion guard is created');
+  const attendanceForGuard = await fetch(`${process.env.ATTENDANCE_SERVICE_URL}/internal/v1/attendance`, {
+    method: 'POST',
+    headers: employeeInternalHeaders,
+    body: JSON.stringify({ employee_id: protectedEmployee.d.id, date: '2020-01-02' }),
+  });
+  ok(attendanceForGuard.status === 201, 'Attendance Service stores deletion-guard fixture in its own DB');
+  ok((await call('DELETE', '/employees/' + protectedEmployee.d.id, null, A)).s === 409,
+    'employee deletion is blocked while Attendance Service data exists');
+  const deleteAttendanceFixture = await fetch(`${process.env.ATTENDANCE_SERVICE_URL}/internal/v1/attendance?employee_id=${protectedEmployee.d.id}&date=2020-01-02`, {
+    method: 'DELETE',
+    headers: { 'X-Internal-Service-Token': process.env.INTERNAL_SERVICE_TOKEN },
+  });
+  ok(deleteAttendanceFixture.status === 200, 'Attendance Service cleans up deletion-guard fixture');
+  ok((await call('DELETE', '/employees/' + protectedEmployee.d.id, null, A)).s === 200,
+    'employee can be deleted after related attendance data is removed');
 
   // Nhan vien chi sua SDT cua minh
   ok((await call('PUT', '/employees/' + mine[0].id, { phone: '0901234567', name: 'Hack', status: 'Chính thức' }, U1)).s === 200);
@@ -574,7 +787,8 @@ const L = require('./lib');
   ok(dA.headcount >= 4 && dA.by_department.length > 0 && dA.payroll_trend.length === 1 && Number.isInteger(dA.late_today), 'dashboard HR có số liệu biểu đồ');
   const dU = (await call('GET', '/dashboard', null, U1)).d;
   ok(dU.headcount === undefined && dU.payroll_trend === undefined && dU.my_today.check_in && dU.my_leave.quota === 12, 'dashboard nhan vien chi thay du lieu cua minh');
-  ok((await call('GET', '/dashboard', null, U2)).d.pending_for_me === 1, 'dashboard quan ly dem don nghi cho duyet');
+  const managerDashboard = await call('GET', '/dashboard', null, U2);
+  ok(managerDashboard.d.pending_for_me === 1, 'dashboard quan ly dem don nghi cho duyet');
 
   // ===== Tăng ca, lịch sử, báo cáo, thông báo =====
   ok((await call('POST', '/overtime', { date: '2026-10-05', hours: 2, reason: 'Chốt tiến độ' }, U1)).s === 201, 'nhân viên gửi đề nghị tăng ca');
@@ -738,6 +952,21 @@ const L = require('./lib');
   ok(L.getSettings().work_start === '08:30'
     && L.holidays('2020-01-01', '2020-12-31').size === 0,
   'synchronous HRM calculations retain the last Config Service cache when it is down');
+  const cachedLeaveBalance = await call('GET', '/leave/balance', null, A);
+  ok(cachedLeaveBalance.s === 200 && Number.isFinite(cachedLeaveBalance.d.quota),
+    'Leave balance continues to use Core Config cache when Config Service is down');
+  await attendanceApp.close();
+  const attendanceServiceDown = await call('GET', '/attendance/today', null, A);
+  ok(attendanceServiceDown.s === 503 && attendanceServiceDown.d.code === 'DEPENDENCY_UNAVAILABLE',
+    'attendance API returns 503 when Attendance Service is down');
+  await leaveApp.close();
+  const leaveServiceDown = await call('GET', '/leave/types', null, A);
+  ok(leaveServiceDown.s === 503 && leaveServiceDown.d.code === 'DEPENDENCY_UNAVAILABLE',
+    'leave API returns 503 when Leave Service is down');
+  await payrollApp.close();
+  const payrollServiceDown = await call('GET', '/payroll/periods', null, A);
+  ok(payrollServiceDown.s === 503 && payrollServiceDown.d.code === 'DEPENDENCY_UNAVAILABLE',
+    'payroll API returns 503 when Payroll Service is down');
   const isolatedIdentityApp = await createIdentityApp();
   await isolatedIdentityApp.listen(0, '127.0.0.1');
   const isolatedIdentityUrl = `http://127.0.0.1:${isolatedIdentityApp.getHttpServer().address().port}`;

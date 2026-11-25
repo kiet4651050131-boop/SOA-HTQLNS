@@ -33,7 +33,6 @@ router.put('/settings', need('admin', 'hr'), wrap(async (req, res) => {
     if (k === 'overtime_rate' && !(Number(v) >= 1 && Number(v) <= 3)) return res.status(400).json({ error: 'Hệ số tăng ca phải từ 1 đến 3' });
     if (PERCENT.includes(k) && !(v !== '' && Number(v) >= 0 && Number(v) <= 100)) return res.status(400).json({ error: 'Tỷ lệ phải từ 0 đến 100 (%)' });
     if (MONEY.includes(k) && !(v !== '' && Number.isInteger(Number(v)) && Number(v) >= 0)) return res.status(400).json({ error: 'Số tiền phải là số nguyên không âm' });
-    if (k === 'tax_brackets') { try { L.parseBrackets(v); } catch (e) { return res.status(400).json({ error: e.message }); } }
     out[k] = v;
   }
   const result = await callConfigService('/internal/v1/settings', { method: 'PUT', body: out });

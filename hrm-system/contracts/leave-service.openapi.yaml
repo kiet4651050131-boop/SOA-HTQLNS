@@ -1,0 +1,297 @@
+openapi: 3.1.0
+info:
+  title: HRM Leave and Overtime Service
+  version: 1.0.0
+  description: Private leave, overtime, balance, and reporting API.
+servers:
+  - url: http://127.0.0.1:3004
+security:
+  - InternalServiceToken: []
+paths:
+  /health:
+    get:
+      operationId: leaveServiceHealth
+      security: []
+      responses:
+        '200': { description: Service is running }
+  /internal/v1/leave/types:
+    get:
+      operationId: listLeaveTypes
+      responses:
+        '200': { description: Leave types }
+        '401': { description: Internal service token is missing or invalid }
+  /internal/v1/leave/requests:
+    get:
+      operationId: listLeaveRequests
+      parameters:
+        - { name: ids, in: query, required: true, schema: { type: string }, description: Comma-separated employee IDs, up to 100 }
+        - { name: status, in: query, schema: { type: string, enum: ['Chờ quản lý', 'Chờ HR', 'Đã duyệt', 'Từ chối', 'Đã hủy'] } }
+      responses:
+        '200': { description: Requests including leave type details }
+        '400': { description: Invalid employee IDs or status }
+        '401': { description: Internal service token is missing or invalid }
+    post:
+      operationId: createLeaveRequest
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [employee_id, type_id, from_date, to_date, half, days, reason, status]
+              properties:
+                employee_id: { type: integer, minimum: 1 }
+                type_id: { type: integer, minimum: 1 }
+                from_date: { type: string, format: date }
+                to_date: { type: string, format: date }
+                half: { type: integer, enum: [0, 1] }
+                days: { type: number, exclusiveMinimum: 0 }
+                reason: { type: string, maxLength: 500 }
+                status: { type: string, enum: ['Chờ quản lý', 'Chờ HR'] }
+      responses:
+        '201': { description: Request created }
+        '400': { description: Invalid request or leave type }
+        '401': { description: Internal service token is missing or invalid }
+  /internal/v1/leave/requests/{id}:
+    get:
+      operationId: getLeaveRequest
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer, minimum: 1 } }
+      responses:
+        '200': { description: Leave request or null }
+        '401': { description: Internal service token is missing or invalid }
+    put:
+      operationId: updateLeaveRequest
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer, minimum: 1 } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status, decided_by]
+              properties:
+                status: { type: string, enum: ['Chờ quản lý', 'Chờ HR', 'Đã duyệt', 'Từ chối', 'Đã hủy'] }
+                manager_note: { type: string, maxLength: 300 }
+                decided_by: { type: string, maxLength: 200 }
+      responses:
+        '200': { description: Request updated or null if not found }
+        '400': { description: Invalid status }
+        '401': { description: Internal service token is missing or invalid }
+  /internal/v1/leave/requests/by-record-ids:
+    get:
+      operationId: getLeaveRequestsByRecordIds
+      parameters:
+        - { name: ids, in: query, required: true, schema: { type: string }, description: Comma-separated leave request IDs, up to 100 }
+      responses:
+        '200': { description: Leave requests matching the record IDs }
+        '400': { description: Invalid IDs }
+        '401': { description: Internal service token is missing or invalid }
+  /internal/v1/leave/count:
+    get:
+      operationId: countLeaveRequests
+      parameters:
+        - { name: ids, in: query, required: true, schema: { type: string }, description: Comma-separated employee IDs, up to 100 }
+        - { name: status, in: query, required: true, schema: { type: string, enum: ['Chờ quản lý', 'Chờ HR', 'Đã duyệt', 'Từ chối', 'Đã hủy'] } }
+      responses:
+        '200': { description: Number of requests matching employee IDs and status }
+        '400': { description: Invalid IDs or status }
+        '401': { description: Internal service token is missing or invalid }
+  /internal/v1/leave/conflict:
+    get:
+      operationId: checkLeaveOverlap
+      parameters:
+        - { name: employee_id, in: query, required: true, schema: { type: integer, minimum: 1 } }
+        - { name: from, in: query, required: true, schema: { type: string, format: date } }
+        - { name: to, in: query, required: true, schema: { type: string, format: date } }
+      responses:
+        '200': { description: Whether an active request overlaps the requested date range }
+        '400': { description: Invalid employee ID }
+        '401': { description: Internal service token is missing or invalid }
+  /internal/v1/leave/balance:
+    get:
+      operationId: getLeaveBalance
+      parameters:
+        - { name: employee_id, in: query, required: true, schema: { type: integer, minimum: 1 } }
+        - { name: year, in: query, required: true, schema: { type: string, pattern: '^\d{4}$' } }
+        - { name: quota, in: query, required: true, schema: { type: number, minimum: 0 }, description: Current quota from Core's Config cache }
+      responses:
+        '200': { description: Annual quota, used, pending, and remaining leave days }
+        '400': { description: Invalid employee ID or year }
+        '401': { description: Internal service token is missing or invalid }
+  /internal/v1/leave/approved:
+    get:
+      operationId: listApprovedLeaves
+      parameters:
+        - { name: ids, in: query, required: true, schema: { type: string }, description: Comma-separated employee IDs, up to 100 }
+        - { name: from, in: query, required: true, schema: { type: string, format: date } }
+        - { name: to, in: query, required: true, schema: { type: string, format: date } }
+      responses:
+        '200': { description: Approved leave intervals for Attendance summaries }
+        '400': { description: Invalid IDs or date range }
+        '401': { description: Internal service token is missing or invalid }
+  /internal/v1/overtime/requests:
+    get:
+      operationId: listOvertimeRequests
+      parameters:
+        - { name: ids, in: query, required: true, schema: { type: string }, description: Comma-separated employee IDs, up to 100 }
+      responses:
+        '200': { description: Overtime requests }
+        '400': { description: Invalid employee IDs }
+        '401': { description: Internal service token is missing or invalid }
+    post:
+      operationId: createOvertimeRequest
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [employee_id, date, hours, reason, status]
+              properties:
+                employee_id: { type: integer, minimum: 1 }
+                date: { type: string, format: date }
+                hours: { type: number, exclusiveMinimum: 0, maximum: 12 }
+                reason: { type: string, maxLength: 500 }
+                status: { type: string, enum: ['Chờ quản lý', 'Chờ HR'] }
+      responses:
+        '201': { description: Request created }
+        '400': { description: Invalid overtime request }
+        '401': { description: Internal service token is missing or invalid }
+  /internal/v1/overtime/requests/{id}:
+    get:
+      operationId: getOvertimeRequest
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer, minimum: 1 } }
+      responses:
+        '200': { description: Overtime request or null }
+        '401': { description: Internal service token is missing or invalid }
+    put:
+      operationId: updateOvertimeRequest
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer, minimum: 1 } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status, decided_by]
+              properties:
+                status: { type: string, enum: ['Chờ quản lý', 'Chờ HR', 'Đã duyệt', 'Từ chối', 'Đã hủy'] }
+                manager_note: { type: string, maxLength: 300 }
+                decided_by: { type: string, maxLength: 200 }
+      responses:
+        '200': { description: Request updated or null if not found }
+        '400': { description: Invalid status }
+        '401': { description: Internal service token is missing or invalid }
+  /internal/v1/overtime/requests/by-record-ids:
+    get:
+      operationId: getOvertimeRequestsByRecordIds
+      parameters:
+        - { name: ids, in: query, required: true, schema: { type: string }, description: Comma-separated overtime request IDs, up to 100 }
+      responses:
+        '200': { description: Overtime requests matching the record IDs }
+        '400': { description: Invalid IDs }
+        '401': { description: Internal service token is missing or invalid }
+  /internal/v1/overtime/approved-hours:
+    get:
+      operationId: getApprovedOvertimeHours
+      parameters:
+        - { name: month, in: query, required: true, schema: { type: string, pattern: '^\d{4}-(0[1-9]|1[0-2])$' } }
+        - { name: to, in: query, schema: { type: string, format: date }, description: Optional cutoff date in the selected month }
+      responses:
+        '200': { description: Approved hours aggregated by employee }
+        '400': { description: Invalid month }
+        '401': { description: Internal service token is missing or invalid }
+  /internal/v1/reports:
+    get:
+      operationId: getLeaveAndOvertimeReport
+      parameters:
+        - { name: ids, in: query, required: true, schema: { type: string }, description: Comma-separated employee IDs, up to 100 }
+        - { name: from, in: query, required: true, schema: { type: string, format: date } }
+        - { name: to, in: query, required: true, schema: { type: string, format: date } }
+      responses:
+        '200': { description: Leave-by-status and approved overtime aggregates }
+        '400': { description: Invalid IDs or date range }
+        '401': { description: Internal service token is missing or invalid }
+  /internal/v1/employees/{id}/has-requests:
+    get:
+      operationId: employeeHasLeaveOrOvertimeRequests
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer, minimum: 1 } }
+      responses:
+        '200': { description: Whether the employee has any leave or overtime history }
+        '401': { description: Internal service token is missing or invalid }
+  /internal/v1/migrate:
+    post:
+      operationId: migrateLegacyLeaveAndOvertime
+      description: Idempotently imports each collection in batches of at most 500 records.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                leave_types:
+                  type: array
+                  maxItems: 500
+                  items: { $ref: '#/components/schemas/LeaveType' }
+                leave_requests:
+                  type: array
+                  maxItems: 500
+                  items: { $ref: '#/components/schemas/LeaveRequest' }
+                overtime_requests:
+                  type: array
+                  maxItems: 500
+                  items: { $ref: '#/components/schemas/OvertimeRequest' }
+      responses:
+        '201': { description: Records imported }
+        '400': { description: Invalid migration batch }
+        '401': { description: Internal service token is missing or invalid }
+components:
+  securitySchemes:
+    InternalServiceToken:
+      type: apiKey
+      in: header
+      name: X-Internal-Service-Token
+  schemas:
+    LeaveType:
+      type: object
+      required: [id, name, paid, uses_quota]
+      properties:
+        id: { type: integer, minimum: 1 }
+        name: { type: string }
+        paid: { type: integer, enum: [0, 1] }
+        uses_quota: { type: integer, enum: [0, 1] }
+    LeaveRequest:
+      type: object
+      required: [id, employee_id, type_id, from_date, to_date, days, status]
+      properties:
+        id: { type: integer, minimum: 1 }
+        employee_id: { type: integer, minimum: 1 }
+        type_id: { type: integer, minimum: 1 }
+        from_date: { type: string, format: date }
+        to_date: { type: string, format: date }
+        half: { type: integer, enum: [0, 1] }
+        days: { type: number, minimum: 0 }
+        reason: { type: string }
+        status: { type: string, enum: ['Chờ quản lý', 'Chờ HR', 'Đã duyệt', 'Từ chối', 'Đã hủy'] }
+        manager_note: { type: string }
+        decided_by: { type: string }
+        created_at: { type: string }
+    OvertimeRequest:
+      type: object
+      required: [id, employee_id, date, hours, status]
+      properties:
+        id: { type: integer, minimum: 1 }
+        employee_id: { type: integer, minimum: 1 }
+        date: { type: string, format: date }
+        hours: { type: number, exclusiveMinimum: 0, maximum: 12 }
+        reason: { type: string }
+        status: { type: string, enum: ['Chờ quản lý', 'Chờ HR', 'Đã duyệt', 'Từ chối', 'Đã hủy'] }
+        manager_note: { type: string }
+        decided_by: { type: string }
+        created_at: { type: string }

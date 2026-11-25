@@ -73,12 +73,24 @@ export class EmployeeService implements OnModuleDestroy {
   }
 
   listEmployees(filters: {
-    email?: string; ids?: string; department_id?: string; q?: string;
+    email?: string; emails?: string; ids?: string; codes?: string; department_id?: string; q?: string;
     scope_email?: string; scope_role?: string;
   }) {
     let sql = `${this.employeeQuery()} WHERE 1=1`;
     const args: Array<string | number> = [];
     if (filters.email) { sql += ' AND lower(e.email) = lower(?)'; args.push(filters.email); }
+    if (filters.emails) {
+      const emails = filters.emails.split(',').map((email) => email.trim().toLowerCase()).filter(Boolean);
+      if (!emails.length) return [];
+      sql += ` AND lower(e.email) IN (${emails.map(() => '?').join(',')})`;
+      args.push(...emails);
+    }
+    if (filters.codes) {
+      const codes = filters.codes.split(',').map((code) => code.trim()).filter(Boolean);
+      if (!codes.length) return [];
+      sql += ` AND e.code IN (${codes.map(() => '?').join(',')})`;
+      args.push(...codes);
+    }
     if (filters.ids) {
       const ids = filters.ids.split(',').map(Number).filter((id) => Number.isInteger(id) && id > 0);
       if (!ids.length) return [];
@@ -331,7 +343,8 @@ class EmployeeController {
 
   @Get('/internal/v1/employees')
   listEmployees(@Headers('x-internal-service-token') token: string | undefined, @Query() query: {
-    email?: string; ids?: string; department_id?: string; q?: string; scope_email?: string; scope_role?: string;
+    email?: string; emails?: string; ids?: string; codes?: string; department_id?: string; q?: string;
+    scope_email?: string; scope_role?: string;
   }) {
     this.authorize(token);
     return this.employees.listEmployees(query);
