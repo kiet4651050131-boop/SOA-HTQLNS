@@ -1,0 +1,229 @@
+openapi: 3.1.0
+info:
+  title: HRM Employee Service
+  version: 1.0.0
+  description: Private employee, organization, and employee-history service contract.
+servers:
+  - url: http://127.0.0.1:3002
+security:
+  - InternalServiceToken: []
+paths:
+  /health:
+    get:
+      operationId: employeeServiceHealth
+      security: []
+      responses:
+        '200': { description: Service is running }
+  /internal/v1/employees:
+    get:
+      operationId: listEmployees
+      parameters:
+        - { name: email, in: query, schema: { type: string, format: email } }
+        - { name: ids, in: query, schema: { type: string }, description: Comma-separated employee IDs }
+        - { name: department_id, in: query, schema: { type: integer, minimum: 1 } }
+        - { name: q, in: query, schema: { type: string } }
+        - { name: scope_email, in: query, schema: { type: string, format: email } }
+        - { name: scope_role, in: query, schema: { type: string } }
+      responses:
+        '200': { description: Employee records with department and position names }
+        '401': { description: Internal service token is missing or invalid }
+    post:
+      operationId: createEmployee
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EmployeeInput' }
+      responses:
+        '201': { description: Employee created }
+        '400': { description: Invalid organization reference }
+        '401': { description: Internal service token is missing or invalid }
+        '409': { description: Employee code or email already exists }
+  /internal/v1/employees/{id}:
+    get:
+      operationId: getEmployee
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer, minimum: 1 } }
+      responses:
+        '200': { description: Employee record }
+        '401': { description: Internal service token is missing or invalid }
+        '404': { description: Employee not found }
+  /internal/v1/employees/{id}/phone:
+    put:
+      operationId: updateEmployeePhone
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer, minimum: 1 } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [phone]
+              properties:
+                phone: { type: string }
+      responses:
+        '200': { description: Employee phone updated }
+        '401': { description: Internal service token is missing or invalid }
+        '404': { description: Employee not found }
+    put:
+      operationId: updateEmployee
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer, minimum: 1 } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EmployeeInput' }
+      responses:
+        '200': { description: Employee updated }
+        '400': { description: Invalid organization reference }
+        '401': { description: Internal service token is missing or invalid }
+        '404': { description: Employee not found }
+        '409': { description: Employee code or email already exists }
+    delete:
+      operationId: deleteEmployee
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer, minimum: 1 } }
+      responses:
+        '200': { description: Employee deleted }
+        '401': { description: Internal service token is missing or invalid }
+        '404': { description: Employee not found }
+  /internal/v1/employees/ensure:
+    post:
+      operationId: ensureEmployee
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, email]
+              properties:
+                name: { type: string, minLength: 1 }
+                email: { type: string, format: email }
+      responses:
+        '201': { description: Employee profile created if it did not exist }
+        '400': { description: Invalid name or email }
+        '401': { description: Internal service token is missing or invalid }
+  /internal/v1/migrate:
+    post:
+      operationId: migrateEmployeeData
+      description: Idempotently imports legacy employee and organization rows in batches of at most 500.
+      responses:
+        '201': { description: Legacy data imported }
+        '400': { description: Invalid migration batch }
+        '401': { description: Internal service token is missing or invalid }
+  /internal/v1/departments:
+    get:
+      operationId: listDepartments
+      responses:
+        '200': { description: Department list }
+        '401': { description: Internal service token is missing or invalid }
+    post:
+      operationId: createDepartment
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, minLength: 1 }
+      responses:
+        '201': { description: Department created }
+        '400': { description: Invalid department name }
+        '401': { description: Internal service token is missing or invalid }
+        '409': { description: Department already exists }
+  /internal/v1/positions:
+    get:
+      operationId: listPositions
+      responses:
+        '200': { description: Position list }
+        '401': { description: Internal service token is missing or invalid }
+    post:
+      operationId: createPosition
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, minLength: 1 }
+      responses:
+        '201': { description: Position created }
+        '400': { description: Invalid position name }
+        '401': { description: Internal service token is missing or invalid }
+        '409': { description: Position already exists }
+  /internal/v1/departments/{id}:
+    delete:
+      operationId: deleteDepartment
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer, minimum: 1 } }
+      responses:
+        '200': { description: Department deleted }
+        '401': { description: Internal service token is missing or invalid }
+        '404': { description: Department not found }
+        '409': { description: Department is in use }
+  /internal/v1/positions/{id}:
+    delete:
+      operationId: deletePosition
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer, minimum: 1 } }
+      responses:
+        '200': { description: Position deleted }
+        '401': { description: Internal service token is missing or invalid }
+        '404': { description: Position not found }
+        '409': { description: Position is in use }
+  /internal/v1/history:
+    get:
+      operationId: listEmployeeHistory
+      parameters:
+        - { name: employee_id, in: query, schema: { type: integer, minimum: 1 } }
+        - { name: scope_email, in: query, schema: { type: string, format: email } }
+        - { name: scope_role, in: query, schema: { type: string } }
+      responses:
+        '200': { description: Employee history within the requested access scope }
+        '401': { description: Internal service token is missing or invalid }
+        '404': { description: Requested employee history is outside the access scope }
+    post:
+      operationId: appendEmployeeHistory
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [entity, actor_email, changes]
+              properties:
+                employee_id: { type: [integer, 'null'] }
+                employee_code: { type: string }
+                employee_name: { type: string }
+                entity: { type: string }
+                actor_email: { type: string, format: email }
+                changes: { type: object }
+      responses:
+        '201': { description: History event recorded }
+        '401': { description: Internal service token is missing or invalid }
+components:
+  securitySchemes:
+    InternalServiceToken:
+      type: apiKey
+      in: header
+      name: X-Internal-Service-Token
+  schemas:
+    EmployeeInput:
+      type: object
+      required: [code, name, email]
+      properties:
+        code: { type: string, minLength: 1 }
+        name: { type: string, minLength: 1 }
+        email: { type: string, format: email }
+        phone: { type: string }
+        department_id: { type: [integer, 'null'] }
+        position_id: { type: [integer, 'null'] }
+        status: { type: string }
+        start_date: { type: string, format: date }

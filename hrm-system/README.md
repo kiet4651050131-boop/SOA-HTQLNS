@@ -33,13 +33,15 @@ Backend: Node.js + NestJS (Express adapter) + TypeScript + SQLite (`node:sqlite`
 ```bash
 npm install
 cp .env.example .env        # rồi điền JWT_SECRET (xem hướng dẫn trong file)
-npm start                   # tự biên dịch, chạy Gateway :3000, Identity :3001, Core :3100, Email :3200, Config :3300
+npm start                   # tự biên dịch, chạy Gateway :3000, Identity :3001, Core :3100, Email :3200, Config :3300, Employee :3002
 npm test                    # chạy bộ kiểm thử API 
 ```
 
-Trong môi trường production, đặt `INTERNAL_SERVICE_TOKEN` thành chuỗi ngẫu nhiên dài; không dùng token mặc định dành cho development. `npm run start:core`, `npm run start:gateway`, `npm run start:email`, `npm run start:config`, `npm run start:identity` khởi chạy từng process riêng nếu cần. Nếu chạy Core riêng, phải khởi động Identity, Email/Notification và Config Service trước.
+Trong môi trường production, đặt `INTERNAL_SERVICE_TOKEN` thành chuỗi ngẫu nhiên dài; không dùng token mặc định dành cho development. `npm run start:core`, `npm run start:gateway`, `npm run start:email`, `npm run start:config`, `npm run start:identity`, `npm run start:employee` khởi chạy từng process riêng nếu cần. Nếu chạy Core riêng, phải khởi động Identity, Email/Notification, Config và Employee Service trước.
 
-Khi phát triển có hot reload, chạy `npm run dev:identity`, `npm run dev:email`, `npm run dev:config`, `npm run dev:core` và `npm run dev:gateway` trong năm terminal riêng.
+Employee Service (`EMPLOYEE_PORT`, mặc định 3002) hiện đã có process, DB và hợp đồng API riêng. Ở giai đoạn chuyển tiếp hiện tại, Core vẫn còn giữ và sử dụng các bảng nhân viên trong `hrm.db`; khi khởi động, dữ liệu được sao chép sang `employee.db` nhưng chưa xóa bảng cũ hoặc chuyển hết các route sang API. Vì vậy đây **chưa phải cutover hoàn chỉnh**. Sao lưu thư mục `data/` trước lần chạy đầu tiên để tạo DB này.
+
+Khi phát triển có hot reload, chạy `npm run dev:identity`, `npm run dev:email`, `npm run dev:config`, `npm run dev:employee`, `npm run dev:core` và `npm run dev:gateway` trong các terminal riêng.
 
 Lần chạy đầu tiên, màn hình đăng nhập có nút tạo **tài khoản Admin đầu tiên**. Sau đó đăng ký tự do **đóng hẳn**: Admin tạo tài khoản ở tab "Tài khoản" (hệ thống sinh mật khẩu tạm, hiện một lần để chuyển cho nhân viên). HR tạo được tài khoản Nhân viên qua API `POST /api/users`; Admin tạo và đổi được mọi vai trò. Mật khẩu tối thiểu 8 ký tự. Tài khoản mới và tài khoản được Admin đặt lại mật khẩu phải đổi mật khẩu ở lần đăng nhập tiếp theo; khi nâng cấp hệ thống, các tài khoản hiện có cũng cần đổi mật khẩu một lần.
 
@@ -98,7 +100,7 @@ Lần chạy đầu tiên, màn hình đăng nhập có nút tạo **tài khoả
 1. Đặt `NODE_ENV=production`, `JWT_SECRET` dài ngẫu nhiên (chỉ Identity nhận giá trị này) và `INTERNAL_SERVICE_TOKEN` dài ít nhất 32 byte.
 2. **Bắt buộc chạy sau HTTPS** (Nginx/Caddy làm reverse proxy). Nếu dùng proxy, cấu hình `GATEWAY_TRUST_PROXY` đúng với proxy tin cậy để giới hạn đăng nhập tính đúng IP; không bật trust proxy rộng nếu chưa kiểm soát được nguồn kết nối.
 3. Chạy bằng `npm start` hoặc `docker build -t hrm . && docker run -d -p 3000:3000 -v hrm-data:/app/data --env-file .env hrm`. Chỉ expose cổng Gateway ra ngoài; Core Service mặc định chỉ bind loopback.
-4. **Sao lưu** toàn bộ thư mục `data/` hằng ngày (bao gồm `hrm.db`, `email.db`, `config.db` và `identity.db`), và thử khôi phục ít nhất một lần.
+4. **Sao lưu** toàn bộ thư mục `data/` hằng ngày (bao gồm `hrm.db`, `email.db`, `config.db`, `identity.db` và `employee.db`), và thử khôi phục ít nhất một lần.
 
 ## Giới hạn hiện tại
 - Upload và lưu file hợp đồng/giấy tờ, thông báo email (ngoại trừ email khôi phục mật khẩu)

@@ -11,12 +11,14 @@
     "start:email": "npm run build && node dist/email-main.js",
     "start:config": "npm run build && node dist/config-main.js",
     "start:identity": "npm run build && node dist/identity-main.js",
+    "start:employee": "npm run build && node dist/employee-main.js",
     "dev": "tsx watch src/main.ts",
     "dev:core": "tsx watch src/main.ts",
     "dev:gateway": "tsx watch src/gateway-main.ts",
     "dev:email": "tsx watch src/email-main.ts",
     "dev:config": "tsx watch src/config-main.ts",
     "dev:identity": "tsx watch src/identity-main.ts",
+    "dev:employee": "tsx watch src/employee-main.ts",
     "test": "npm run build && node test.js"
   },
   "engines": {

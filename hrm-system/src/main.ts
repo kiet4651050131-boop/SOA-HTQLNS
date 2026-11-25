@@ -6,6 +6,7 @@ export async function bootstrap() {
     'EMAIL_DB_FILE', 'EMAIL_PORT', 'EMAIL_HOST',
     'CONFIG_DB_FILE', 'CONFIG_PORT', 'CONFIG_HOST',
     'IDENTITY_DB_FILE', 'IDENTITY_PORT', 'IDENTITY_HOST',
+    'EMPLOYEE_DB_FILE', 'EMPLOYEE_PORT', 'EMPLOYEE_HOST',
     'JWT_SECRET',
   ]) {
     delete process.env[key];

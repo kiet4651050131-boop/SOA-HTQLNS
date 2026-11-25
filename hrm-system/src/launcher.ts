@@ -63,6 +63,9 @@ async function run() {
   const identityPort = Number(process.env.IDENTITY_PORT ?? 3001);
   const identityHost = process.env.IDENTITY_HOST ?? '127.0.0.1';
   const identityUrl = process.env.IDENTITY_SERVICE_URL ?? `http://${identityHost}:${identityPort}`;
+  const employeePort = Number(process.env.EMPLOYEE_PORT ?? 3002);
+  const employeeHost = process.env.EMPLOYEE_HOST ?? '127.0.0.1';
+  const employeeUrl = process.env.EMPLOYEE_SERVICE_URL ?? `http://${employeeHost}:${employeePort}`;
   const corePort = Number(process.env.CORE_PORT ?? 3100);
   const coreHost = process.env.CORE_HOST ?? '127.0.0.1';
   const coreUrl = process.env.CORE_SERVICE_URL ?? `http://${coreHost}:${corePort}`;
@@ -72,6 +75,7 @@ async function run() {
       'PORT', 'GATEWAY_HOST', 'GATEWAY_TRUST_PROXY', 'GATEWAY_TIMEOUT_MS',
       'CONFIG_DB_FILE', 'CONFIG_PORT', 'CONFIG_HOST', 'CONFIG_SERVICE_URL', 'CONFIG_SERVICE_TIMEOUT_MS',
       'IDENTITY_DB_FILE', 'IDENTITY_PORT', 'IDENTITY_HOST', 'IDENTITY_SERVICE_URL', 'IDENTITY_SERVICE_TIMEOUT_MS',
+      'EMPLOYEE_DB_FILE', 'EMPLOYEE_PORT', 'EMPLOYEE_HOST', 'EMPLOYEE_SERVICE_URL', 'EMPLOYEE_SERVICE_TIMEOUT_MS',
     ]),
     EMAIL_PORT: String(emailPort),
     EMAIL_HOST: emailHost,
@@ -82,6 +86,8 @@ async function run() {
   let configExit: Promise<ExitResult> | undefined;
   let identity: ChildProcess | undefined;
   let identityExit: Promise<ExitResult> | undefined;
+  let employee: ChildProcess | undefined;
+  let employeeExit: Promise<ExitResult> | undefined;
   let core: ChildProcess | undefined;
   let coreExit: Promise<ExitResult> | undefined;
   let gateway: ChildProcess | undefined;
@@ -91,6 +97,7 @@ async function run() {
     if (gateway && gateway.exitCode === null) gateway.kill(signal);
     if (core && core.exitCode === null) core.kill(signal);
     if (identity && identity.exitCode === null) identity.kill(signal);
+    if (employee && employee.exitCode === null) employee.kill(signal);
     if (config && config.exitCode === null) config.kill(signal);
     if (email.exitCode === null) email.kill(signal);
   };
@@ -110,6 +117,7 @@ async function run() {
         'SMTP_HOST', 'SMTP_PORT', 'SMTP_SECURE', 'SMTP_USER', 'SMTP_PASS', 'SMTP_FROM',
         'PORT', 'GATEWAY_HOST', 'GATEWAY_TRUST_PROXY', 'GATEWAY_TIMEOUT_MS',
         'IDENTITY_DB_FILE', 'IDENTITY_PORT', 'IDENTITY_HOST', 'IDENTITY_SERVICE_URL', 'IDENTITY_SERVICE_TIMEOUT_MS',
+        'EMPLOYEE_DB_FILE', 'EMPLOYEE_PORT', 'EMPLOYEE_HOST', 'EMPLOYEE_SERVICE_URL', 'EMPLOYEE_SERVICE_TIMEOUT_MS',
       ]),
       CONFIG_PORT: String(configPort),
       CONFIG_HOST: configHost,
@@ -118,12 +126,28 @@ async function run() {
     });
     configExit = trackExit(config, 'Config Service');
     await waitForService(new URL('/health', configUrl).toString(), 'Config Service', configExit);
+    employee = startNode('employee-main.js', {
+      ...withoutEnv(process.env, [
+        'DB_FILE', 'JWT_SECRET', 'APP_URL', 'CORE_PORT', 'CORE_HOST', 'CORE_SERVICE_URL',
+        'EMAIL_DB_FILE', 'EMAIL_PORT', 'EMAIL_HOST', 'EMAIL_SERVICE_URL',
+        'CONFIG_DB_FILE', 'CONFIG_PORT', 'CONFIG_HOST', 'CONFIG_SERVICE_URL',
+        'IDENTITY_DB_FILE', 'IDENTITY_PORT', 'IDENTITY_HOST', 'IDENTITY_SERVICE_URL',
+        'PORT', 'GATEWAY_HOST', 'GATEWAY_TRUST_PROXY', 'GATEWAY_TIMEOUT_MS',
+        'SMTP_HOST', 'SMTP_PORT', 'SMTP_SECURE', 'SMTP_USER', 'SMTP_PASS', 'SMTP_FROM',
+      ]),
+      EMPLOYEE_PORT: String(employeePort),
+      EMPLOYEE_HOST: employeeHost,
+      INTERNAL_SERVICE_TOKEN: internalToken,
+    });
+    employeeExit = trackExit(employee, 'Employee Service');
+    await waitForService(new URL('/health', employeeUrl).toString(), 'Employee Service', employeeExit);
     identity = startNode('identity-main.js', {
       ...withoutEnv(process.env, [
         'DB_FILE', 'EMAIL_DB_FILE', 'CONFIG_DB_FILE', 'PORT', 'GATEWAY_HOST',
         'EMAIL_PORT', 'EMAIL_HOST', 'CONFIG_PORT', 'CONFIG_HOST',
         'SMTP_HOST', 'SMTP_PORT', 'SMTP_SECURE', 'SMTP_USER', 'SMTP_PASS', 'SMTP_FROM',
         'GATEWAY_TRUST_PROXY', 'GATEWAY_TIMEOUT_MS',
+        'EMPLOYEE_DB_FILE', 'EMPLOYEE_PORT', 'EMPLOYEE_HOST', 'EMPLOYEE_SERVICE_URL', 'EMPLOYEE_SERVICE_TIMEOUT_MS',
       ]),
       IDENTITY_PORT: String(identityPort),
       IDENTITY_HOST: identityHost,
@@ -131,6 +155,7 @@ async function run() {
       EMAIL_SERVICE_URL: emailUrl,
       CORE_SERVICE_URL: coreUrl,
       INTERNAL_SERVICE_TOKEN: internalToken,
+      EMPLOYEE_SERVICE_URL: employeeUrl,
     });
     identityExit = trackExit(identity, 'Identity Service');
     await waitForService(new URL('/health', identityUrl).toString(), 'Identity Service', identityExit);
@@ -140,12 +165,14 @@ async function run() {
         'EMAIL_PORT', 'EMAIL_HOST', 'GATEWAY_HOST', 'GATEWAY_TRUST_PROXY', 'GATEWAY_TIMEOUT_MS',
         'CONFIG_DB_FILE', 'CONFIG_PORT', 'CONFIG_HOST',
         'JWT_SECRET', 'IDENTITY_DB_FILE', 'IDENTITY_PORT', 'IDENTITY_HOST',
+        'EMPLOYEE_DB_FILE', 'EMPLOYEE_PORT', 'EMPLOYEE_HOST',
       ]),
       CORE_PORT: String(corePort),
       CORE_HOST: coreHost,
       EMAIL_SERVICE_URL: emailUrl,
       CONFIG_SERVICE_URL: configUrl,
       IDENTITY_SERVICE_URL: identityUrl,
+      EMPLOYEE_SERVICE_URL: employeeUrl,
       INTERNAL_SERVICE_TOKEN: internalToken,
     });
     coreExit = trackExit(core, 'Core Service');
@@ -157,13 +184,14 @@ async function run() {
         'EMAIL_SERVICE_URL', 'EMAIL_SERVICE_TIMEOUT_MS',
         'CONFIG_DB_FILE', 'CONFIG_PORT', 'CONFIG_HOST', 'CONFIG_SERVICE_URL', 'CONFIG_SERVICE_TIMEOUT_MS',
         'IDENTITY_DB_FILE', 'IDENTITY_PORT', 'IDENTITY_HOST',
+        'EMPLOYEE_DB_FILE', 'EMPLOYEE_PORT', 'EMPLOYEE_HOST', 'EMPLOYEE_SERVICE_URL', 'EMPLOYEE_SERVICE_TIMEOUT_MS',
       ]),
       CORE_SERVICE_URL: coreUrl,
       IDENTITY_SERVICE_URL: identityUrl,
       PORT: process.env.PORT ?? '3000',
     });
     gatewayExit = trackExit(gateway, 'API Gateway');
-    const exits = [emailExit, configExit, identityExit, coreExit, gatewayExit];
+    const exits = [emailExit, configExit, employeeExit, identityExit, coreExit, gatewayExit];
     const result = await Promise.race(exits);
     stop('SIGTERM');
     await Promise.all(exits);
@@ -174,6 +202,7 @@ async function run() {
     if (gateway && gateway.exitCode === null) gateway.kill('SIGTERM');
     if (core && core.exitCode === null) core.kill('SIGTERM');
     if (identity && identity.exitCode === null) identity.kill('SIGTERM');
+    if (employee && employee.exitCode === null) employee.kill('SIGTERM');
     if (config && config.exitCode === null) config.kill('SIGTERM');
     if (email.exitCode === null) email.kill('SIGTERM');
   }

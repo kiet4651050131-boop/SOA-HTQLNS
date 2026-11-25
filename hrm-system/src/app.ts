@@ -49,6 +49,40 @@ interface LegacyResetToken {
   expires_at: number;
 }
 
+interface LegacyDepartment {
+  id: number;
+  name: string;
+}
+
+interface LegacyPosition {
+  id: number;
+  name: string;
+}
+
+interface LegacyEmployee {
+  id: number;
+  code: string;
+  name: string;
+  email: string;
+  phone: string;
+  department_id: number | null;
+  position_id: number | null;
+  status: string;
+  start_date: string;
+  created_at: string;
+}
+
+interface LegacyEmployeeHistory {
+  id: number;
+  employee_id: number | null;
+  employee_code: string;
+  employee_name: string;
+  entity: string;
+  actor_email: string;
+  changes: string;
+  created_at: string;
+}
+
 interface LegacyDb {
   prepare(sql: string): {
     get(...args: unknown[]): unknown;
@@ -170,6 +204,44 @@ async function migrateIdentityData() {
   db.exec('DROP TABLE IF EXISTS password_reset_tokens; DROP TABLE IF EXISTS users;');
 }
 
+async function migrateEmployeeData() {
+  const { db } = require('../db') as { db: LegacyDb };
+  const { callEmployeeService } = require('../employee-client') as {
+    callEmployeeService: (path: string, options: { method: 'POST'; body: object }) => Promise<unknown>;
+  };
+  const tableExists = (name: string) => !!db.prepare(
+    "SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = ?",
+  ).get(name);
+  const departments = tableExists('departments')
+    ? db.prepare('SELECT id, name FROM departments ORDER BY id').all() as LegacyDepartment[]
+    : [];
+  const positions = tableExists('positions')
+    ? db.prepare('SELECT id, name FROM positions ORDER BY id').all() as LegacyPosition[]
+    : [];
+  const employees = tableExists('employees')
+    ? db.prepare(`SELECT id, code, name, email, phone, department_id, position_id, status, start_date, created_at
+      FROM employees ORDER BY id`).all() as LegacyEmployee[]
+    : [];
+  const history = tableExists('employee_history')
+    ? db.prepare(`SELECT id, employee_id, employee_code, employee_name, entity, actor_email, changes, created_at
+      FROM employee_history ORDER BY id`).all() as LegacyEmployeeHistory[]
+    : [];
+  const batchSize = 500;
+  const batches = Math.max(1, Math.ceil(Math.max(departments.length, positions.length, employees.length, history.length) / batchSize));
+  for (let batch = 0; batch < batches; batch++) {
+    const start = batch * batchSize;
+    await callEmployeeService('/internal/v1/migrate', {
+      method: 'POST',
+      body: {
+        departments: departments.slice(start, start + batchSize),
+        positions: positions.slice(start, start + batchSize),
+        employees: employees.slice(start, start + batchSize),
+        employee_history: history.slice(start, start + batchSize),
+      },
+    });
+  }
+}
+
 export async function createApp() {
   const app = await NestFactory.create(AppModule, { bodyParser: false });
   const server = app.getHttpAdapter().getInstance();
@@ -233,6 +305,7 @@ export async function createApp() {
   await migrateCommunicationData();
   await migrateConfigData();
   await migrateIdentityData();
+  await migrateEmployeeData();
   const { refreshConfigCache, startConfigCacheRefresh } = require('../config-cache') as {
     refreshConfigCache: () => Promise<void>;
     startConfigCacheRefresh: () => void;

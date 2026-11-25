@@ -4,10 +4,12 @@ process.env.JWT_SECRET = 'test-secret-test-secret-test-secret-123';
 process.env.EMAIL_DB_FILE = ':memory:';
 process.env.CONFIG_DB_FILE = ':memory:';
 process.env.IDENTITY_DB_FILE = ':memory:';
+process.env.EMPLOYEE_DB_FILE = ':memory:';
 process.env.INTERNAL_SERVICE_TOKEN = 'test-internal-service-token';
 process.env.NOTIFICATION_SERVICE_TIMEOUT_MS = '200';
 process.env.CONFIG_SERVICE_TIMEOUT_MS = '200';
 process.env.IDENTITY_SERVICE_TIMEOUT_MS = '3000';
+process.env.EMPLOYEE_SERVICE_TIMEOUT_MS = '200';
 for (const key of ['SMTP_HOST', 'SMTP_PORT', 'SMTP_SECURE', 'SMTP_USER', 'SMTP_PASS', 'SMTP_FROM', 'APP_URL']) {
   process.env[key] = '';
 }
@@ -21,6 +23,7 @@ const { createGateway } = require('./dist/gateway');
 const { createEmailApp } = require('./dist/email-main');
 const { createConfigApp } = require('./dist/config-main');
 const { createIdentityApp } = require('./dist/identity-main');
+const { createEmployeeApp } = require('./dist/employee-main');
 const L = require('./lib');
 
 (async () => {
@@ -88,6 +91,10 @@ const L = require('./lib');
   await identityApp.listen(0, '127.0.0.1');
   const identityServer = identityApp.getHttpServer();
   process.env.IDENTITY_SERVICE_URL = `http://127.0.0.1:${identityServer.address().port}`;
+  const employeeApp = await createEmployeeApp();
+  await employeeApp.listen(0, '127.0.0.1');
+  const employeeServer = employeeApp.getHttpServer();
+  process.env.EMPLOYEE_SERVICE_URL = `http://127.0.0.1:${employeeServer.address().port}`;
   const nestApp = await createApp();
   await nestApp.listen(0);
   const srv = nestApp.getHttpServer();
@@ -122,6 +129,8 @@ const L = require('./lib');
   ok(configHealth.status === 200 && (await configHealth.json()).service === 'hrm-config-service', 'Config service has independent health endpoint');
   const identityHealth = await fetch(process.env.IDENTITY_SERVICE_URL + '/health');
   ok(identityHealth.status === 200 && (await identityHealth.json()).service === 'hrm-identity-service', 'Identity service has independent health endpoint');
+  const employeeHealth = await fetch(process.env.EMPLOYEE_SERVICE_URL + '/health');
+  ok(employeeHealth.status === 200 && (await employeeHealth.json()).service === 'hrm-employee-service', 'Employee service has independent health endpoint');
   const unauthorizedEmail = await fetch(process.env.EMAIL_SERVICE_URL + '/internal/v1/email', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -134,6 +143,36 @@ const L = require('./lib');
   ok(unauthorizedConfig.status === 401, 'Config service rejects unauthenticated internal calls');
   const unauthorizedIdentity = await fetch(process.env.IDENTITY_SERVICE_URL + '/internal/v1/users');
   ok(unauthorizedIdentity.status === 401, 'Identity service rejects unauthenticated internal calls');
+  const unauthorizedEmployee = await fetch(process.env.EMPLOYEE_SERVICE_URL + '/internal/v1/employees');
+  ok(unauthorizedEmployee.status === 401, 'Employee service rejects unauthenticated internal calls');
+  const migratedEmployee = await fetch(`${process.env.EMPLOYEE_SERVICE_URL}/internal/v1/employees?email=admin%40cty.vn`, {
+    headers: { 'X-Internal-Service-Token': process.env.INTERNAL_SERVICE_TOKEN },
+  });
+  ok(migratedEmployee.status === 200 && (await migratedEmployee.json()).length === 1,
+    'legacy employee data is copied into Employee Service before Core starts');
+  const employeeInternalHeaders = {
+    'Content-Type': 'application/json',
+    'X-Internal-Service-Token': process.env.INTERNAL_SERVICE_TOKEN,
+  };
+  const employeeCreated = await fetch(`${process.env.EMPLOYEE_SERVICE_URL}/internal/v1/employees`, {
+    method: 'POST',
+    headers: employeeInternalHeaders,
+    body: JSON.stringify({ code: 'SVC001', name: 'Service Employee', email: 'service-employee@cty.vn' }),
+  });
+  const employeeCreatedBody = await employeeCreated.json();
+  ok(employeeCreated.status === 201 && employeeCreatedBody.id,
+    'Employee Service creates employee records in its own database');
+  const employeeRead = await fetch(`${process.env.EMPLOYEE_SERVICE_URL}/internal/v1/employees/${employeeCreatedBody.id}`, {
+    headers: employeeInternalHeaders,
+  });
+  ok(employeeRead.status === 200 && (await employeeRead.json()).email === 'service-employee@cty.vn',
+    'Employee Service returns records by employee ID');
+  const duplicateEmployee = await fetch(`${process.env.EMPLOYEE_SERVICE_URL}/internal/v1/employees`, {
+    method: 'POST',
+    headers: employeeInternalHeaders,
+    body: JSON.stringify({ code: 'SVC001', name: 'Duplicate', email: 'duplicate@cty.vn' }),
+  });
+  ok(duplicateEmployee.status === 409, 'Employee Service rejects duplicate employee codes');
   const unauthorizedEmployeeEnsure = await fetch(`${process.env.CORE_SERVICE_URL}/internal/v1/employees/ensure`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -728,4 +767,5 @@ const L = require('./lib');
   console.log(`OK: ${n} kiem tra dat`);
   await new Promise((resolve) => gatewayServer.close(resolve));
   await nestApp.close();
+  await employeeApp.close();
 })().catch((e) => { console.error('FAIL:', e.message); process.exit(1); });
