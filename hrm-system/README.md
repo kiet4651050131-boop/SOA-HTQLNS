@@ -4,8 +4,6 @@ Backend: Node.js + NestJS (Express adapter) + TypeScript + SQLite (`node:sqlite`
 
 ## Kiến trúc hiện tại
 
-Ứng dụng đang ở **giai đoạn chuyển đổi sang SOA**, chưa phải SOA hoàn chỉnh:
-
 - API Gateway chạy riêng trên cổng `PORT` (mặc định `3000`), phục vụ giao diện và chuyển tiếp nguyên trạng `/api/*` qua HTTP đến HRM Core Service.
 - HRM Core Service chạy riêng trên `CORE_PORT` (mặc định `3100`) và sở hữu `DB_FILE`.
 - Email/Notification Service chạy riêng trên `EMAIL_PORT` (mặc định `3200`), nhận lệnh email, thông báo và audit từ Core qua HTTP có xác thực nội bộ. Service sở hữu `EMAIL_DB_FILE`, chứa `email_dispatches`, `notifications` và `audit_logs`; không lưu nội dung email hay khóa ngoại sang bảng users. Đây là process duy nhất giữ cấu hình/credential SMTP.
