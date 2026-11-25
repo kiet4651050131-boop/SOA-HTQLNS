@@ -1,0 +1,159 @@
+openapi: 3.1.0
+info:
+  title: HRM Config Service
+  version: 1.0.0
+  description: Private configuration and holiday service contract.
+servers:
+  - url: http://127.0.0.1:3300
+security:
+  - InternalServiceToken: []
+paths:
+  /health:
+    get:
+      operationId: configServiceHealth
+      security: []
+      responses:
+        '200': { description: Service is running }
+  /internal/v1/settings:
+    get:
+      operationId: getSettings
+      summary: Retrieve all system settings
+      responses:
+        '200':
+          description: Key/value settings
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: { type: string }
+        '401': { description: Internal service token is missing or invalid }
+    put:
+      operationId: updateSettings
+      summary: Update one or more system settings
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: { type: string }
+      responses:
+        '200':
+          description: Updated settings
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, settings]
+                properties:
+                  ok: { type: boolean, const: true }
+                  settings:
+                    type: object
+                    additionalProperties: { type: string }
+        '400': { description: Invalid setting }
+        '401': { description: Internal service token is missing or invalid }
+  /internal/v1/holidays:
+    get:
+      operationId: listHolidays
+      summary: List holidays, optionally filtered by an inclusive date range
+      description: Supply both from and to, or omit both to return every holiday.
+      parameters:
+        - in: query
+          name: from
+          required: false
+          schema: { type: string, format: date }
+        - in: query
+          name: to
+          required: false
+          schema: { type: string, format: date }
+      responses:
+        '200':
+          description: Holidays sorted by date
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Holiday' }
+        '400': { description: Invalid date range }
+        '401': { description: Internal service token is missing or invalid }
+    post:
+      operationId: createHoliday
+      summary: Add a holiday
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [date, name]
+              properties:
+                date: { type: string, format: date }
+                name: { type: string, minLength: 1, maxLength: 100 }
+      responses:
+        '201':
+          description: Holiday added
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, holiday]
+                properties:
+                  ok: { type: boolean, const: true }
+                  holiday: { $ref: '#/components/schemas/Holiday' }
+        '400': { description: Invalid holiday }
+        '401': { description: Internal service token is missing or invalid }
+        '409': { description: Holiday already exists for the date }
+  /internal/v1/holidays/{date}:
+    delete:
+      operationId: deleteHoliday
+      summary: Delete a holiday
+      parameters:
+        - in: path
+          name: date
+          required: true
+          schema: { type: string, format: date }
+      responses:
+        '200': { description: Holiday deleted }
+        '401': { description: Internal service token is missing or invalid }
+        '404': { description: Holiday not found }
+  /internal/v1/migrate:
+    post:
+      operationId: migrateLegacyConfiguration
+      summary: Import one idempotent batch from the legacy Core database
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                settings:
+                  type: array
+                  maxItems: 500
+                  items:
+                    type: object
+                    required: [key, value]
+                    properties:
+                      key: { type: string }
+                      value: { type: string }
+                holidays:
+                  type: array
+                  maxItems: 500
+                  items: { $ref: '#/components/schemas/Holiday' }
+      responses:
+        '201': { description: Batch migrated transactionally }
+        '400': { description: Invalid migration batch }
+        '401': { description: Internal service token is missing or invalid }
+components:
+  securitySchemes:
+    InternalServiceToken:
+      type: apiKey
+      in: header
+      name: X-Internal-Service-Token
+  schemas:
+    Holiday:
+      type: object
+      required: [date, name]
+      properties:
+        date: { type: string, format: date }
+        name: { type: string }

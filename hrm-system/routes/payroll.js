@@ -1,8 +1,9 @@
 const router = require('express').Router();
 const { db, audit, recordHistory, notifyUser } = require('../db');
-const { auth, need } = require('../middleware');
+const { auth, need, wrap } = require('../middleware');
 const L = require('../lib');
 const { notifyWorkflowEmail } = require('../mailer');
+const { usersByRoles, usersByEmails, userByEmail } = require('../identity-client');
 
 router.use(auth);
 
@@ -153,7 +154,7 @@ router.get('/advances', (req, res) => {
   });
 });
 
-router.post('/advances', (req, res) => {
+router.post('/advances', wrap(async (req, res) => {
   if (!['employee', 'manager'].includes(req.user.role)) return res.status(403).json({ error: 'Chỉ nhân viên mới có thể gửi yêu cầu ứng lương' });
   const employee = L.meEmp(req.user);
   if (!employee) return res.status(404).json({ error: 'Không tìm thấy hồ sơ nhân viên' });
@@ -163,6 +164,7 @@ router.post('/advances', (req, res) => {
   const note = String((req.body || {}).note || '').trim().slice(0, 200);
   if (!note) return res.status(400).json({ error: 'Vui lòng nhập lý do ứng lương' });
   const month = L.curMonth();
+  const recipients = await usersByRoles(['admin', 'hr']);
   const result = db.transaction(() => {
     const summary = advanceSummary(employee, month);
     if (!summary.configured) return { status: 400, error: 'Nhân viên chưa được thiết lập lương' };
@@ -174,15 +176,18 @@ router.post('/advances', (req, res) => {
   })();
   if (result.status !== 201) return res.status(result.status).json({ error: result.error });
   audit(req.user, `Gửi yêu cầu ứng lương ${amount} cho kỳ ${month}`);
-  db.prepare("SELECT id FROM users WHERE role IN ('admin','hr')").all()
-    .forEach((user) => notifyUser(user.id, 'Yêu cầu ứng lương mới', `${employee.name} đề nghị ứng ${amount} đồng.`, '/pay'));
+  recipients.forEach((user) => notifyUser(user.id, 'Yêu cầu ứng lương mới', `${employee.name} đề nghị ứng ${amount} đồng.`, '/pay'));
   res.status(201).json({ id: result.id, month: result.month, amount });
-});
+}));
 
-router.put('/advances/:id/decision', HR, (req, res) => {
+router.put('/advances/:id/decision', HR, wrap(async (req, res) => {
   const body = req.body || {};
   if (!['approve', 'reject'].includes(body.action)) return res.status(400).json({ error: 'Thao tác không hợp lệ' });
   const reviewNote = String(body.note || '').trim().slice(0, 200);
+  const current = db.prepare(`SELECT e.email FROM advance_requests r
+    JOIN employees e ON e.id = r.employee_id WHERE r.id = ?`).get(req.params.id);
+  if (!current) return res.status(404).json({ error: 'Không tìm thấy yêu cầu ứng lương' });
+  const recipient = await userByEmail(current.email);
   const result = db.transaction(() => {
     const request = db.prepare(`SELECT r.*, e.code, e.name, e.email, e.status employee_status, e.start_date
       FROM advance_requests r JOIN employees e ON e.id = r.employee_id WHERE r.id = ?`).get(req.params.id);
@@ -215,13 +220,12 @@ router.put('/advances/:id/decision', HR, (req, res) => {
     return { status: 200, request };
   })();
   if (result.status !== 200) return res.status(result.status).json({ error: result.error });
-  const user = db.prepare('SELECT id FROM users WHERE email = ?').get(result.request.email);
-  if (user) notifyUser(user.id, body.action === 'approve' ? 'Yêu cầu ứng lương đã duyệt' : 'Yêu cầu ứng lương bị từ chối',
+  if (recipient) notifyUser(recipient.id, body.action === 'approve' ? 'Yêu cầu ứng lương đã duyệt' : 'Yêu cầu ứng lương bị từ chối',
     body.action === 'approve' ? `Yêu cầu ứng ${result.request.amount} đồng đã được ghi nhận vào kỳ lương ${result.request.month}.` : (reviewNote || 'HR đã từ chối yêu cầu ứng lương.'),
     '/pay');
   audit(req.user, `${body.action === 'approve' ? 'Duyệt' : 'Từ chối'} ứng lương ${result.request.amount} cho ${result.request.code} kỳ ${result.request.month}`);
   res.json({ ok: true });
-});
+}));
 
 router.get('/periods/:id/adjustments', HR, (req, res) => {
   const p = period(req.params.id);
@@ -308,19 +312,19 @@ router.post('/periods/:id/calculate', HR, (req, res) => {
   res.json({ count, skipped, negative, unapplied_adjustments: lost, warning: to >= L.today() ? 'Tháng này chưa kết thúc nên ngày công chưa đầy đủ. Hãy tính lại sau khi hết tháng.' : '' });
 });
 
-router.post('/periods/:id/lock', HR, (req, res) => {
+router.post('/periods/:id/lock', HR, wrap(async (req, res) => {
   const p = period(req.params.id);
   if (!p) return res.status(404).json({ error: 'Không tìm thấy kỳ lương' });
   if (p.status === 'Đã chốt') return res.status(400).json({ error: 'Kỳ lương đã được chốt' });
   if (!db.prepare('SELECT 1 FROM payslips WHERE period_id = ?').get(p.id)) return res.status(400).json({ error: 'Chưa có phiếu lương, hãy bấm Tính lương trước' });
+  const employeeEmails = db.prepare(`SELECT DISTINCT e.email FROM payslips s
+    JOIN employees e ON e.id = s.employee_id WHERE s.period_id = ?`).all(p.id).map((employee) => employee.email);
+  const employees = await usersByEmails(employeeEmails);
   const locked = db.transaction(() => {
     const result = db.prepare("UPDATE payroll_periods SET status = 'Đã chốt', locked_at = datetime('now','localtime') WHERE id = ? AND status = 'Nháp'").run(p.id);
     return result.changes === 1 && L.isPayrollLocked(p.month);
   })();
   if (!locked) return res.status(409).json({ error: 'Kỳ lương đã được thay đổi, vui lòng tải lại và thử lại' });
-  const employees = db.prepare(`SELECT DISTINCT u.id, u.email FROM payslips s
-    JOIN employees e ON e.id = s.employee_id JOIN users u ON u.email = e.email WHERE s.period_id = ?`)
-    .all(p.id);
   employees.forEach((employee) => {
     notifyUser(employee.id, 'Phiếu lương đã sẵn sàng', `Phiếu lương tháng ${p.month} đã được chốt.`, '/pay');
   });
@@ -331,7 +335,7 @@ router.post('/periods/:id/lock', HR, (req, res) => {
   );
   audit(req.user, `Chốt kỳ lương ${p.month}`);
   res.json({ ok: true });
-});
+}));
 
 router.post('/periods/:id/unlock', need('admin'), (req, res) => {
   const p = period(req.params.id);

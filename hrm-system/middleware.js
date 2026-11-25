@@ -1,36 +1,35 @@
-const jwt = require('jsonwebtoken');
-const { db } = require('./db');
+const { timingSafeEqual } = require('crypto');
 
-let SECRET = process.env.JWT_SECRET;
-if (!SECRET) {
-  if (process.env.NODE_ENV === 'production') throw new Error('Thiếu JWT_SECRET trong môi trường production');
-  console.warn('[CẢNH BÁO] Chưa đặt JWT_SECRET, đang dùng khóa tạm cho môi trường dev.');
-  SECRET = 'dev-only-secret-' + require('crypto').randomBytes(16).toString('hex');
+function hasTrustedGateway(req) {
+  const expected = process.env.INTERNAL_SERVICE_TOKEN
+    || (process.env.NODE_ENV === 'production' ? '' : 'dev-only-internal-service-token');
+  const provided = req.headers['x-internal-service-token'];
+  return typeof provided === 'string' && expected.length > 0
+    && Buffer.byteLength(expected) === Buffer.byteLength(provided)
+    && timingSafeEqual(Buffer.from(expected), Buffer.from(provided));
 }
 
-const sign = (user) => jwt.sign({ id: user.id }, SECRET, { expiresIn: '8h' });
-
-// Luôn đọc lại user từ CSDL để đổi vai trò / xóa tài khoản có hiệu lực ngay
 function auth(req, res, next) {
-  const m = /^Bearer (.+)$/.exec(req.headers.authorization || '');
-  if (!m) return res.status(401).json({ error: 'Chưa đăng nhập' });
-  try {
-    const { id } = jwt.verify(m[1], SECRET);
-    const user = db.prepare('SELECT id, email, name, role, must_change_password FROM users WHERE id = ?').get(id);
-    if (!user) return res.status(401).json({ error: 'Tài khoản không còn tồn tại' });
-    req.user = user;
-    const allowedDuringPasswordChange = req.baseUrl === '/api/auth'
-      && (req.path === '/me' || req.path === '/change-password');
-    if (user.must_change_password && !allowedDuringPasswordChange) {
-      return res.status(403).json({
-        error: 'Bạn cần đổi mật khẩu trước khi tiếp tục',
-        code: 'PASSWORD_CHANGE_REQUIRED',
-      });
-    }
-    next();
-  } catch {
-    res.status(401).json({ error: 'Phiên đăng nhập hết hạn' });
+  if (!hasTrustedGateway(req)) return res.status(401).json({ error: 'Chưa đăng nhập' });
+  const id = Number(req.headers['x-user-id']);
+  const email = String(req.headers['x-user-email'] || '');
+  const name = String(req.headers['x-user-name'] || '');
+  const role = String(req.headers['x-user-role'] || '');
+  const mustChange = Number(req.headers['x-user-must-change-password']);
+  if (!Number.isSafeInteger(id) || id < 1 || !email || !name
+    || !['admin', 'hr', 'manager', 'employee'].includes(role) || ![0, 1].includes(mustChange)) {
+    return res.status(401).json({ error: 'Thông tin xác thực không hợp lệ' });
   }
+  req.user = { id, email, name, role, must_change_password: mustChange };
+  const allowedDuringPasswordChange = req.baseUrl === '/api/auth'
+    && (req.path === '/me' || req.path === '/change-password');
+  if (mustChange && !allowedDuringPasswordChange) {
+    return res.status(403).json({
+      error: 'Bạn cần đổi mật khẩu trước khi tiếp tục',
+      code: 'PASSWORD_CHANGE_REQUIRED',
+    });
+  }
+  next();
 }
 
 const need = (...roles) => (req, res, next) =>
@@ -40,4 +39,4 @@ const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).cat
 
 const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 
-module.exports = { sign, auth, need, wrap, EMAIL_RE };
+module.exports = { auth, need, wrap, EMAIL_RE };

@@ -5,9 +5,18 @@
   "main": "dist/main.js",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "prestart": "npm run build",
-    "start": "node dist/main.js",
+    "start": "npm run build && node dist/launcher.js",
+    "start:core": "npm run build && node dist/main.js",
+    "start:gateway": "npm run build && node dist/gateway-main.js",
+    "start:email": "npm run build && node dist/email-main.js",
+    "start:config": "npm run build && node dist/config-main.js",
+    "start:identity": "npm run build && node dist/identity-main.js",
     "dev": "tsx watch src/main.ts",
+    "dev:core": "tsx watch src/main.ts",
+    "dev:gateway": "tsx watch src/gateway-main.ts",
+    "dev:email": "tsx watch src/email-main.ts",
+    "dev:config": "tsx watch src/config-main.ts",
+    "dev:identity": "tsx watch src/identity-main.ts",
     "test": "npm run build && node test.js"
   },
   "engines": {

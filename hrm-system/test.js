@@ -1,26 +1,173 @@
 // Kiem thu nhanh toan bo API (dung CSDL tam trong bo nho): npm test
 process.env.DB_FILE = ':memory:';
 process.env.JWT_SECRET = 'test-secret-test-secret-test-secret-123';
+process.env.EMAIL_DB_FILE = ':memory:';
+process.env.CONFIG_DB_FILE = ':memory:';
+process.env.IDENTITY_DB_FILE = ':memory:';
+process.env.INTERNAL_SERVICE_TOKEN = 'test-internal-service-token';
+process.env.NOTIFICATION_SERVICE_TIMEOUT_MS = '200';
+process.env.CONFIG_SERVICE_TIMEOUT_MS = '200';
+process.env.IDENTITY_SERVICE_TIMEOUT_MS = '3000';
 for (const key of ['SMTP_HOST', 'SMTP_PORT', 'SMTP_SECURE', 'SMTP_USER', 'SMTP_PASS', 'SMTP_FROM', 'APP_URL']) {
   process.env[key] = '';
 }
 const assert = require('assert');
+const { createHash } = require('node:crypto');
+const bcrypt = require('bcryptjs');
 const net = require('node:net');
+const http = require('node:http');
 const { createApp } = require('./dist/app');
+const { createGateway } = require('./dist/gateway');
+const { createEmailApp } = require('./dist/email-main');
+const { createConfigApp } = require('./dist/config-main');
+const { createIdentityApp } = require('./dist/identity-main');
 const L = require('./lib');
 
 (async () => {
+  const { db } = require('./db');
+  const legacyResetToken = 'a'.repeat(64);
+  const passwordHash = await bcrypt.hash('secret1234', 10);
+  db.exec(`CREATE TABLE users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    email TEXT NOT NULL UNIQUE,
+    name TEXT NOT NULL,
+    password_hash TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'employee',
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+  );
+  CREATE TABLE password_reset_tokens (
+    token_hash TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    expires_at INTEGER NOT NULL
+  );`);
+  db.prepare('INSERT INTO users(id, email, name, password_hash, role) VALUES (?, ?, ?, ?, ?)')
+    .run(1, 'admin@cty.vn', 'Admin', passwordHash, 'admin');
+  db.prepare('INSERT INTO password_reset_tokens(token_hash, user_id, expires_at) VALUES (?, ?, ?)')
+    .run(createHash('sha256').update(legacyResetToken).digest('hex'), 1, Date.now() + 60 * 60 * 1000);
+  db.prepare(`INSERT INTO employees(code, name, email, status, start_date)
+    VALUES ('NV001', 'Admin', 'admin@cty.vn', 'Chờ cập nhật', '')`).run();
+  db.exec(`CREATE TABLE audit_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    user_email TEXT NOT NULL,
+    action TEXT NOT NULL
+  );
+  CREATE TABLE notifications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    title TEXT NOT NULL,
+    message TEXT NOT NULL DEFAULT '',
+    href TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    read_at TEXT
+  );
+  CREATE TABLE settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+  );
+  CREATE TABLE holidays (
+    date TEXT PRIMARY KEY,
+    name TEXT NOT NULL
+  );`);
+  db.prepare('INSERT INTO audit_logs(id, user_email, action) VALUES (?, ?, ?)')
+    .run(9000, 'migration@example.com', 'legacy-audit-migration');
+  db.prepare('INSERT INTO notifications(id, user_id, title, message, href) VALUES (?, ?, ?, ?, ?)')
+    .run(9000, 1, 'legacy-notification-migration', 'old notification', '/');
+  db.prepare('INSERT INTO settings(key, value) VALUES (?, ?)').run('work_start', '09:00');
+  db.prepare('INSERT INTO holidays(date, name) VALUES (?, ?)').run('2020-05-01', 'legacy-holiday-migration');
+
+  const emailApp = await createEmailApp();
+  await emailApp.listen(0, '127.0.0.1');
+  const emailServer = emailApp.getHttpServer();
+  process.env.EMAIL_SERVICE_URL = `http://127.0.0.1:${emailServer.address().port}`;
+  const configApp = await createConfigApp();
+  await configApp.listen(0, '127.0.0.1');
+  const configServer = configApp.getHttpServer();
+  process.env.CONFIG_SERVICE_URL = `http://127.0.0.1:${configServer.address().port}`;
+  const identityApp = await createIdentityApp();
+  await identityApp.listen(0, '127.0.0.1');
+  const identityServer = identityApp.getHttpServer();
+  process.env.IDENTITY_SERVICE_URL = `http://127.0.0.1:${identityServer.address().port}`;
   const nestApp = await createApp();
   await nestApp.listen(0);
   const srv = nestApp.getHttpServer();
-  const base = `http://127.0.0.1:${srv.address().port}/api`;
+  process.env.CORE_SERVICE_URL = `http://127.0.0.1:${srv.address().port}`;
+  const gatewayServer = createGateway({
+    coreServiceUrl: `http://127.0.0.1:${srv.address().port}`,
+    identityServiceUrl: process.env.IDENTITY_SERVICE_URL,
+    timeoutMs: 1000,
+  }).listen(0);
+  await new Promise((resolve) => gatewayServer.once('listening', resolve));
+  const gatewayBase = `http://127.0.0.1:${gatewayServer.address().port}`;
+  const base = `${gatewayBase}/api`;
   const call = async (m, p, b, t) => {
     const r = await fetch(base + p, { method: m, headers: { 'Content-Type': 'application/json', ...(t ? { Authorization: 'Bearer ' + t } : {}) }, body: b ? JSON.stringify(b) : undefined });
     return { s: r.status, d: await r.json().catch(() => ({})) };
   };
   let n = 0; const ok = (c, m) => { assert(c, m); n++; };
+  ok(!db.prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table'
+    AND name IN ('audit_logs', 'notifications', 'settings', 'holidays', 'users', 'password_reset_tokens')`).get(),
+  'legacy communication, configuration, and identity tables are dropped after migration');
   const page = await fetch(`http://127.0.0.1:${srv.address().port}/`);
   ok(page.status === 200 && page.headers.get('content-type').includes('text/html'), 'NestJS host serves frontend');
+  const gatewayPage = await fetch(gatewayBase + '/');
+  ok(gatewayPage.status === 200 && gatewayPage.headers.get('content-type').includes('text/html'), 'Gateway serves frontend');
+  const gatewayHealth = await fetch(gatewayBase + '/health');
+  ok(gatewayHealth.status === 200 && (await gatewayHealth.json()).service === 'hrm-api-gateway', 'Gateway has independent health endpoint');
+  const gatewayInternal = await fetch(gatewayBase + '/internal/v1/audit');
+  ok(gatewayInternal.status === 404, 'Gateway does not expose internal service endpoints');
+  const emailHealth = await fetch(process.env.EMAIL_SERVICE_URL + '/health');
+  ok(emailHealth.status === 200 && (await emailHealth.json()).service === 'hrm-email-service', 'Email service has independent health endpoint');
+  const configHealth = await fetch(process.env.CONFIG_SERVICE_URL + '/health');
+  ok(configHealth.status === 200 && (await configHealth.json()).service === 'hrm-config-service', 'Config service has independent health endpoint');
+  const identityHealth = await fetch(process.env.IDENTITY_SERVICE_URL + '/health');
+  ok(identityHealth.status === 200 && (await identityHealth.json()).service === 'hrm-identity-service', 'Identity service has independent health endpoint');
+  const unauthorizedEmail = await fetch(process.env.EMAIL_SERVICE_URL + '/internal/v1/email', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ to: 'nobody@example.com', subject: 'test', text: 'test' }),
+  });
+  ok(unauthorizedEmail.status === 401, 'Email service rejects unauthenticated internal calls');
+  const unauthorizedNotification = await fetch(process.env.EMAIL_SERVICE_URL + '/internal/v1/notifications?userId=1');
+  ok(unauthorizedNotification.status === 401, 'Notification service rejects unauthenticated internal calls');
+  const unauthorizedConfig = await fetch(process.env.CONFIG_SERVICE_URL + '/internal/v1/settings');
+  ok(unauthorizedConfig.status === 401, 'Config service rejects unauthenticated internal calls');
+  const unauthorizedIdentity = await fetch(process.env.IDENTITY_SERVICE_URL + '/internal/v1/users');
+  ok(unauthorizedIdentity.status === 401, 'Identity service rejects unauthenticated internal calls');
+  const unauthorizedEmployeeEnsure = await fetch(`${process.env.CORE_SERVICE_URL}/internal/v1/employees/ensure`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: 'No Key', email: 'no-key@example.com' }),
+  });
+  ok(unauthorizedEmployeeEnsure.status === 401, 'Core employee ensure rejects unauthenticated internal calls');
+  const gatewayStatus = await fetch(gatewayBase + '/api/auth/status');
+  const gatewayStatusBody = await gatewayStatus.json();
+  ok(gatewayStatus.status === 200 && gatewayStatusBody.registrationOpen === false,
+    `Gateway forwards API requests to core: ${gatewayStatus.status} ${JSON.stringify(gatewayStatusBody)}`);
+  const gatewayInvalidJson = await fetch(gatewayBase + '/api/auth/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: '{',
+  });
+  ok(gatewayInvalidJson.status === 400, 'Gateway preserves core request validation errors');
+  const gatewayMissing = await fetch(gatewayBase + '/api/missing');
+  ok(gatewayMissing.status === 401 && (await gatewayMissing.json()).error, 'Gateway preserves core API errors');
+
+  const slowCore = http.createServer((_req, res) => {
+    setTimeout(() => res.end('late'), 200);
+  });
+  slowCore.listen(0);
+  await new Promise((resolve) => slowCore.once('listening', resolve));
+  const timeoutGateway = createGateway({
+    coreServiceUrl: `http://127.0.0.1:${slowCore.address().port}`,
+    timeoutMs: 25,
+  }).listen(0);
+  await new Promise((resolve) => timeoutGateway.once('listening', resolve));
+  const timedOut = await fetch(`http://127.0.0.1:${timeoutGateway.address().port}/api/auth/status`);
+  const timeoutBody = await timedOut.json();
+  ok(timedOut.status === 503 && timeoutBody.code === 'CORE_SERVICE_UNAVAILABLE', 'Gateway returns explicit 503 on service timeout');
+  await new Promise((resolve) => timeoutGateway.close(resolve));
+  await new Promise((resolve) => slowCore.close(resolve));
   const invalidJson = await fetch(base + '/auth/login', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -36,15 +183,38 @@ const L = require('./lib');
   };
   ok(L.csvCell('=1+1') === "'=1+1", 'CSV escape cong thuc spreadsheet');
 
-  // Dang ky tu do chi mo cho tai khoan Admin dau tien; sau do Admin/HR tao tai khoan
-  ok((await call('GET', '/auth/status')).d.registrationOpen === true, 'chua co tai khoan: cho phep tao Admin dau tien');
+  // Identity migrates existing credentials and owns subsequent account changes.
+  ok((await call('GET', '/auth/status')).d.registrationOpen === false, 'tai khoan cu duoc migrate sang Identity Service');
   ok((await call('POST', '/auth/register', { name: 'X', email: 'bad', password: '123456' })).s === 400, 'email sai');
   ok((await call('POST', '/auth/register', { name: 'Admin', email: 'admin@cty.vn', password: 'secret1' })).s === 400, 'tu choi mat khau duoi 8 ky tu');
-  const first = await call('POST', '/auth/register', { name: 'Admin', email: 'admin@cty.vn', password: 'secret1234' });
-  ok(first.s === 201 && first.d.role === 'admin', 'user dau tien la admin');
-  ok((await call('GET', '/auth/status')).d.registrationOpen === false, 'da co tai khoan: dong dang ky');
-  ok((await call('POST', '/auth/register', { name: 'An', email: 'an@cty.vn', password: 'secret1234' })).s === 403, 'dang ky tu do da dong');
+  ok((await call('POST', '/auth/register', { name: 'Admin', email: 'admin@cty.vn', password: 'secret1234' })).s === 403,
+    'khong mo dang ky Admin khi Identity da co tai khoan');
   const A = await login('admin@cty.vn');
+  ok((await call('POST', '/auth/reset-password', { token: legacyResetToken, password: 'secret1234' })).s === 200,
+    'legacy password reset token is migrated to Identity Service');
+  const identityUsers = await fetch(`${process.env.IDENTITY_SERVICE_URL}/internal/v1/users`, {
+    headers: { 'X-Internal-Service-Token': process.env.INTERNAL_SERVICE_TOKEN },
+  });
+  ok(identityUsers.status === 200 && (await identityUsers.json()).some((user) => user.email === 'admin@cty.vn'),
+    'legacy credentials are copied to Identity database');
+  const migratedNotification = await call('GET', '/notifications', null, A);
+  ok(migratedNotification.s === 200
+    && migratedNotification.d.notifications.some((item) => item.title === 'legacy-notification-migration'),
+  'legacy notifications are copied into the owned service database');
+  const migratedAudit = await call('GET', '/logs', null, A);
+  ok(migratedAudit.s === 200 && migratedAudit.d.some((item) => item.action === 'legacy-audit-migration'),
+    'legacy audit history is copied into the owned service database');
+  const migratedSettings = await call('GET', '/settings', null, A);
+  ok(migratedSettings.s === 200 && migratedSettings.d.work_start === '09:00',
+    'legacy settings are copied into the owned Config Service database');
+  const migratedHolidays = await call('GET', '/holidays?year=2020', null, A);
+  ok(migratedHolidays.s === 200
+    && migratedHolidays.d.some((item) => item.date === '2020-05-01' && item.name === 'legacy-holiday-migration'),
+  'legacy holidays are copied into the owned Config Service database');
+  ok((await call('PUT', '/settings', { work_start: '08:30' }, A)).s === 200,
+    'configuration updates are saved through Config Service');
+  ok((await call('DELETE', '/holidays/2020-05-01', null, A)).s === 200,
+    'holiday deletion is handled by Config Service');
   ok((await call('GET', '/missing', null, A)).s === 404, 'unknown API stays a JSON 404');
 
   // Admin / HR tao tai khoan
@@ -84,6 +254,15 @@ const L = require('./lib');
   ok((await call('POST', '/auth/login', { email: 'an@cty.vn', password: 'sai' })).s === 401, 'sai mat khau');
   ok((await call('GET', '/employees')).s === 401, 'khong token');
   const U1 = await login('an@cty.vn'), U2 = await login('binh@cty.vn');
+  const spoofedIdentity = await fetch(`${gatewayBase}/api/users`, {
+    headers: {
+      Authorization: `Bearer ${U1}`,
+      'X-Internal-Service-Token': process.env.INTERNAL_SERVICE_TOKEN,
+      'X-User-Role': 'admin',
+      'X-User-Id': String(A),
+    },
+  });
+  ok(spoofedIdentity.status === 403, 'Gateway overwrites forged identity headers with introspected claims');
 
   // Phan quyen xem ho so
   ok((await call('GET', '/employees', null, A)).d.length === 3, 'admin thay tat ca');
@@ -503,6 +682,50 @@ const L = require('./lib');
 
   // Nhat ky
   ok((await call('GET', '/logs', null, A)).d.length > 10, 'co nhat ky');
+  await emailApp.close();
+  await configApp.close();
+  const notificationServiceDown = await fetch(`${gatewayBase}/api/notifications`, {
+    headers: { Authorization: 'Bearer ' + A },
+  });
+  const dependencyError = await notificationServiceDown.json();
+  ok(notificationServiceDown.status === 503 && dependencyError.code === 'DEPENDENCY_UNAVAILABLE',
+    'notification API returns 503 when its service is down');
+  const configServiceDown = await fetch(`${gatewayBase}/api/settings`, {
+    headers: { Authorization: 'Bearer ' + A },
+  });
+  const configDependencyError = await configServiceDown.json();
+  ok(configServiceDown.status === 503 && configDependencyError.code === 'DEPENDENCY_UNAVAILABLE',
+    'configuration API returns 503 when Config Service is down');
+  ok(L.getSettings().work_start === '08:30'
+    && L.holidays('2020-01-01', '2020-12-31').size === 0,
+  'synchronous HRM calculations retain the last Config Service cache when it is down');
+  const isolatedIdentityApp = await createIdentityApp();
+  await isolatedIdentityApp.listen(0, '127.0.0.1');
+  const isolatedIdentityUrl = `http://127.0.0.1:${isolatedIdentityApp.getHttpServer().address().port}`;
+  const isolatedStatus = await fetch(`${isolatedIdentityUrl}/internal/v1/auth/status`, {
+    headers: { 'X-Internal-Service-Token': process.env.INTERNAL_SERVICE_TOKEN },
+  });
+  ok(isolatedStatus.status === 200 && (await isolatedStatus.json()).registrationOpen,
+    'new Identity database opens initial Admin registration');
+  const isolatedRegistration = await fetch(`${isolatedIdentityUrl}/internal/v1/auth/register`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Internal-Service-Token': process.env.INTERNAL_SERVICE_TOKEN,
+    },
+    body: JSON.stringify({ name: 'Isolated Admin', email: 'isolated-admin@cty.vn', password: 'secret1234' }),
+  });
+  ok(isolatedRegistration.status === 201 && (await isolatedRegistration.json()).role === 'admin',
+    'initial Admin registration creates an Identity account and ensures its Core employee');
+  await isolatedIdentityApp.close();
+  await identityApp.close();
+  const identityServiceDown = await fetch(`${gatewayBase}/api/employees`, {
+    headers: { Authorization: 'Bearer invalid-token-for-identity-down-test' },
+  });
+  const identityDependencyError = await identityServiceDown.json();
+  ok(identityServiceDown.status === 503 && identityDependencyError.code === 'IDENTITY_SERVICE_UNAVAILABLE',
+    'Gateway returns 503 when Identity Service is down');
   console.log(`OK: ${n} kiem tra dat`);
+  await new Promise((resolve) => gatewayServer.close(resolve));
   await nestApp.close();
 })().catch((e) => { console.error('FAIL:', e.message); process.exit(1); });

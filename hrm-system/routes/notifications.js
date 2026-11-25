@@ -1,31 +1,26 @@
 const router = require('express').Router();
-const { db } = require('../db');
-const { auth } = require('../middleware');
+const { callService } = require('../service-client');
+const { auth, wrap } = require('../middleware');
 
 router.use(auth);
 
-router.get('/', (req, res) => {
-  const notifications = db.prepare(`SELECT id, title, message, href, created_at, read_at
-    FROM notifications WHERE user_id = ? ORDER BY id DESC LIMIT 50`).all(req.user.id);
-  const unread = db.prepare('SELECT COUNT(*) AS count FROM notifications WHERE user_id = ? AND read_at IS NULL')
-    .get(req.user.id).count;
-  res.json({ notifications, unread });
-});
+router.get('/', wrap(async (req, res) => {
+  const result = await callService(`/internal/v1/notifications?userId=${req.user.id}`);
+  res.json(result);
+}));
 
-router.put('/read-all', (req, res) => {
-  db.prepare(`UPDATE notifications SET read_at = datetime('now','localtime')
-    WHERE user_id = ? AND read_at IS NULL`).run(req.user.id);
+router.put('/read-all', wrap(async (req, res) => {
+  await callService(`/internal/v1/notifications/read-all?userId=${req.user.id}`, { method: 'PUT' });
   res.json({ ok: true });
-});
+}));
 
-router.put('/:id/read', (req, res) => {
-  const result = db.prepare(`UPDATE notifications SET read_at = datetime('now','localtime')
-    WHERE id = ? AND user_id = ? AND read_at IS NULL`).run(req.params.id, req.user.id);
-  if (!result.changes) {
-    const exists = db.prepare('SELECT 1 FROM notifications WHERE id = ? AND user_id = ?').get(req.params.id, req.user.id);
-    if (!exists) return res.status(404).json({ error: 'Không tìm thấy thông báo' });
-  }
+router.put('/:id/read', wrap(async (req, res) => {
+  const result = await callService(
+    `/internal/v1/notifications/${encodeURIComponent(req.params.id)}/read?userId=${req.user.id}`,
+    { method: 'PUT' },
+  );
+  if (!result.ok) return res.status(404).json({ error: 'Không tìm thấy thông báo' });
   res.json({ ok: true });
-});
+}));
 
 module.exports = router;

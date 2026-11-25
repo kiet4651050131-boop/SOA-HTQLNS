@@ -1,8 +1,9 @@
 const router = require('express').Router();
 const { db, audit, notifyUser } = require('../db');
-const { auth } = require('../middleware');
+const { auth, wrap } = require('../middleware');
 const L = require('../lib');
 const { notifyWorkflowEmail } = require('../mailer');
+const { usersByRoles, userByEmail } = require('../identity-client');
 
 router.use(auth);
 
@@ -20,10 +21,7 @@ function canDecide(user, request) {
   return !!manager && !!manager.department_id && manager.department_id === request.department_id;
 }
 
-function notifyRole(role, title, message) {
-  const users = role === 'hr'
-    ? db.prepare("SELECT id, email FROM users WHERE role IN ('admin','hr')").all()
-    : db.prepare('SELECT id, email FROM users WHERE role = ?').all(role);
+function notifyRole(users, title, message) {
   users.forEach((user) => {
     notifyUser(user.id, title, message, '/overtime');
   });
@@ -44,7 +42,7 @@ router.get('/', (req, res) => {
   })));
 });
 
-router.post('/', (req, res) => {
+router.post('/', wrap(async (req, res) => {
   const employee = L.meEmp(req.user);
   if (!employee) return res.status(404).json({ error: 'Tài khoản chưa có hồ sơ nhân viên' });
   if (employee.status === 'Nghỉ việc') return res.status(403).json({ error: 'Hồ sơ đã ở trạng thái nghỉ việc' });
@@ -58,26 +56,26 @@ router.post('/', (req, res) => {
   }
   if (!reason) return res.status(400).json({ error: 'Vui lòng nêu lý do tăng ca' });
 
-  const manager = db.prepare(`SELECT 1 FROM users u JOIN employees e ON e.email = u.email
-    WHERE u.role = 'manager' AND e.department_id = ? AND e.id != ? LIMIT 1`)
-    .get(employee.department_id || 0, employee.id);
-  const status = manager ? 'Chờ quản lý' : 'Chờ HR';
+  const managers = employee.department_id
+    ? (await usersByRoles(['manager'])).filter((user) => db.prepare(
+      'SELECT 1 FROM employees WHERE email = ? AND department_id = ? AND id != ?',
+    ).get(user.email, employee.department_id, employee.id))
+    : [];
+  const status = managers.length ? 'Chờ quản lý' : 'Chờ HR';
+  const hrUsers = status === 'Chờ HR' ? await usersByRoles(['admin', 'hr']) : [];
   const result = db.prepare(`INSERT INTO overtime_requests(employee_id, date, hours, reason, status)
     VALUES (?,?,?,?,?)`).run(employee.id, date, hours, reason, status);
   audit(req.user, `Tạo đề nghị tăng ca #${result.lastInsertRowid} (${date}, ${hours} giờ)`);
 
-  if (manager) {
-    const managers = db.prepare(`SELECT u.id, u.email FROM users u JOIN employees e ON e.email = u.email
-      WHERE u.role = 'manager' AND e.department_id = ? AND e.id != ?`)
-      .all(employee.department_id, employee.id);
+  if (managers.length) {
     const message = `${employee.name} đề nghị tăng ca ${hours} giờ ngày ${date}.`;
     managers.forEach((user) => notifyUser(user.id, 'Đề nghị tăng ca cần duyệt', message, '/overtime'));
     notifyWorkflowEmail(managers.map((user) => user.email), 'Đề nghị tăng ca cần duyệt', `${message}\nĐăng nhập hệ thống để xử lý đề nghị tăng ca.`);
-  } else notifyRole('hr', 'Đề nghị tăng ca cần xử lý', `${employee.name} đề nghị tăng ca ${hours} giờ ngày ${date}.`);
+  } else notifyRole(hrUsers, 'Đề nghị tăng ca cần xử lý', `${employee.name} đề nghị tăng ca ${hours} giờ ngày ${date}.`);
   res.status(201).json({ id: Number(result.lastInsertRowid), status });
-});
+}));
 
-router.put('/:id/decide', (req, res) => {
+router.put('/:id/decide', wrap(async (req, res) => {
   const request = getRequest(req.params.id);
   if (!request) return res.status(404).json({ error: 'Không tìm thấy đề nghị tăng ca' });
   if (!canDecide(req.user, request)) return res.status(403).json({ error: 'Bạn không có quyền xử lý đề nghị này ở bước hiện tại' });
@@ -87,38 +85,36 @@ router.put('/:id/decide', (req, res) => {
   const status = action === 'reject' ? 'Từ chối'
     : request.status === 'Chờ quản lý' ? 'Chờ HR' : 'Đã duyệt';
   const note = String((req.body && req.body.note) || '').trim().slice(0, 300);
+  const hrUsers = status === 'Chờ HR' ? await usersByRoles(['admin', 'hr']) : [];
+  const owner = await userByEmail(request.email);
   db.prepare('UPDATE overtime_requests SET status = ?, manager_note = ?, decided_by = ? WHERE id = ?')
     .run(status, note, req.user.email, request.id);
   audit(req.user, `Đề nghị tăng ca #${request.id} của ${request.code}: ${request.status} → ${status}`);
 
   if (status === 'Chờ HR') {
-    notifyRole('hr', 'Đề nghị tăng ca cần xác nhận', `${request.name}: ${request.date}, ${request.hours} giờ đã được quản lý duyệt.`);
-    const owner = db.prepare('SELECT id FROM users WHERE email = ?').get(request.email);
+    notifyRole(hrUsers, 'Đề nghị tăng ca cần xác nhận', `${request.name}: ${request.date}, ${request.hours} giờ đã được quản lý duyệt.`);
     if (owner) notifyUser(owner.id, 'Đề nghị tăng ca đã qua bước quản lý', `Đề nghị ngày ${request.date} đang chờ HR xác nhận.`, '/overtime');
   } else {
-    const owner = db.prepare('SELECT id FROM users WHERE email = ?').get(request.email);
     const message = `${request.date}, ${request.hours} giờ${note ? ` · ${note}` : ''}`;
     if (owner) notifyUser(owner.id, `Đề nghị tăng ca ${status.toLowerCase()}`, message, '/overtime');
     notifyWorkflowEmail([request.email], `Đề nghị tăng ca ${status.toLowerCase()}`, `${message}\nĐăng nhập hệ thống để xem kết quả.`);
   }
   res.json({ ok: true, status });
-});
+}));
 
-router.put('/:id/cancel', (req, res) => {
+router.put('/:id/cancel', wrap(async (req, res) => {
   const request = getRequest(req.params.id);
   if (!request) return res.status(404).json({ error: 'Không tìm thấy đề nghị tăng ca' });
   const allowed = PENDING.includes(request.status)
     && (L.isHr(req.user) || request.email === req.user.email);
   if (!allowed) return res.status(403).json({ error: 'Không thể hủy đề nghị này' });
   if (L.isPayrollLocked(request.date.slice(0, 7))) return res.status(409).json({ error: 'Kỳ lương tháng này đã chốt, không thể hủy đề nghị' });
+  const owner = request.email !== req.user.email ? await userByEmail(request.email) : null;
   db.prepare("UPDATE overtime_requests SET status = 'Đã hủy', decided_by = ? WHERE id = ?")
     .run(req.user.email, request.id);
   audit(req.user, `Hủy đề nghị tăng ca #${request.id} của ${request.code}`);
-  if (request.email !== req.user.email) {
-    const owner = db.prepare('SELECT id FROM users WHERE email = ?').get(request.email);
-    if (owner) notifyUser(owner.id, 'Đề nghị tăng ca đã bị hủy', `Đề nghị ngày ${request.date} đã được HR hủy.`, '/overtime');
-  }
+  if (owner) notifyUser(owner.id, 'Đề nghị tăng ca đã bị hủy', `Đề nghị ngày ${request.date} đã được HR hủy.`, '/overtime');
   res.json({ ok: true });
-});
+}));
 
 module.exports = router;

@@ -1,0 +1,52 @@
+openapi: 3.1.0
+info:
+  title: HRM Core Internal API
+  version: 1.0.0
+  description: Private employee-profile operation called by Identity Service.
+servers:
+  - url: http://127.0.0.1:3100
+security:
+  - InternalServiceToken: []
+paths:
+  /internal/v1/employees/ensure:
+    post:
+      operationId: ensureEmployeeProfile
+      description: Idempotently create the employee profile associated with an Identity user.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, email]
+              properties:
+                name: { type: string, minLength: 1 }
+                email: { type: string, format: email }
+      responses:
+        '200':
+          description: The employee profile already exists
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EnsureEmployeeResult'
+        '201':
+          description: The employee profile was created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EnsureEmployeeResult'
+        '400': { description: Invalid name or email }
+        '401': { description: Internal service token is missing or invalid }
+components:
+  securitySchemes:
+    InternalServiceToken:
+      type: apiKey
+      in: header
+      name: X-Internal-Service-Token
+  schemas:
+    EnsureEmployeeResult:
+      type: object
+      required: [id, created]
+      properties:
+        id: { type: integer, minimum: 1 }
+        created: { type: boolean }

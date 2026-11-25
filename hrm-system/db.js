@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const { DatabaseSync } = require('node:sqlite'); // SQLite có sẵn trong Node >= 22.13, không cần biên dịch
+const { publishServiceEvent } = require('./service-client');
 
 const file = process.env.DB_FILE || path.join(__dirname, 'data', 'hrm.db');
 if (file !== ':memory:') fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -20,15 +21,6 @@ const db = {
 };
 
 db.exec(`
-CREATE TABLE IF NOT EXISTS users (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  email TEXT NOT NULL UNIQUE,
-  name TEXT NOT NULL,
-  password_hash TEXT NOT NULL,
-  role TEXT NOT NULL DEFAULT 'employee' CHECK (role IN ('admin','hr','manager','employee')),
-  must_change_password INTEGER NOT NULL DEFAULT 1 CHECK (must_change_password IN (0,1)),
-  created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
-);
 CREATE TABLE IF NOT EXISTS departments (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL UNIQUE COLLATE NOCASE
@@ -49,12 +41,6 @@ CREATE TABLE IF NOT EXISTS employees (
   start_date TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
-CREATE TABLE IF NOT EXISTS audit_logs (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
-  user_email TEXT NOT NULL,
-  action TEXT NOT NULL
-);
 CREATE TABLE IF NOT EXISTS employee_history (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   employee_id INTEGER,
@@ -66,36 +52,10 @@ CREATE TABLE IF NOT EXISTS employee_history (
   created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
 CREATE INDEX IF NOT EXISTS idx_history_employee ON employee_history(employee_id, id);
-CREATE TABLE IF NOT EXISTS notifications (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  title TEXT NOT NULL,
-  message TEXT NOT NULL DEFAULT '',
-  href TEXT NOT NULL DEFAULT '',
-  created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
-  read_at TEXT
-);
-CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id, id DESC);
-CREATE TABLE IF NOT EXISTS password_reset_tokens (
-  token_hash TEXT PRIMARY KEY,
-  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  expires_at INTEGER NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_password_reset_user ON password_reset_tokens(user_id);
 `);
-
-// Existing accounts must choose a new password once after upgrading.
-{
-  const cols = db.prepare('PRAGMA table_info(users)').all().map((c) => c.name);
-  if (!cols.includes('must_change_password')) {
-    db.exec('ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 1 CHECK (must_change_password IN (0,1))');
-  }
-}
 
 // ----- Chấm công, nghỉ phép, lương -----
 db.exec(`
-CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS holidays (date TEXT PRIMARY KEY, name TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS attendances (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   employee_id INTEGER NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
@@ -222,24 +182,7 @@ CREATE INDEX IF NOT EXISTS idx_overtime_date_status ON overtime_requests(date, s
   });
 }
 
-// Giá trị mặc định (theo quy định từ 01/7/2026), Admin/HR chỉnh được ở tab Cấu hình
-const DEFAULT_SETTINGS = {
-  work_start: '08:30',          // giờ bắt đầu làm việc, check-in sau giờ này tính đi muộn
-  work_saturday: '0',           // 1 = thứ Bảy là ngày làm việc
-  annual_leave_days: '12',      // số ngày phép năm
-  overtime_rate: '1.5',         // hệ số tăng ca mẫu; cần đối chiếu quy định/chính sách thực tế
-  bhxh_rate: '8',               // % người lao động đóng
-  bhyt_rate: '1.5',
-  bhtn_rate: '1',
-  cap_bhxh: '50600000',         // trần lương đóng BHXH, BHYT = 20 x lương cơ sở 2,53 triệu
-  cap_bhtn: '106200000',        // trần đóng BHTN = 20 x lương tối thiểu vùng (đang để vùng I: 5,31 triệu)
-  personal_deduction: '15500000',
-  dependent_deduction: '6200000',
-  tax_brackets: '10000000:5;30000000:10;60000000:20;100000000:30;*:35',
-};
 {
-  const ins = db.prepare('INSERT OR IGNORE INTO settings(key, value) VALUES (?, ?)');
-  Object.entries(DEFAULT_SETTINGS).forEach(([k, v]) => ins.run(k, v));
   const lt = db.prepare('INSERT OR IGNORE INTO leave_types(name, paid, uses_quota) VALUES (?, ?, ?)');
   lt.run('Phép năm', 1, 1); lt.run('Nghỉ ốm', 1, 0); lt.run('Nghỉ không lương', 0, 0);
 }
@@ -252,7 +195,10 @@ if (db.prepare('SELECT COUNT(*) c FROM departments').get().c === 0) {
 }
 
 function audit(user, action) {
-  db.prepare('INSERT INTO audit_logs(user_email, action) VALUES (?, ?)').run(user ? user.email : '-', action);
+  publishServiceEvent('/internal/v1/audit', {
+    user_email: user ? user.email : '-',
+    action,
+  });
 }
 
 function recordHistory(employee, actor, entity, changes) {
@@ -269,8 +215,12 @@ function recordHistory(employee, actor, entity, changes) {
 }
 
 function notifyUser(userId, title, message, href) {
-  db.prepare('INSERT INTO notifications(user_id, title, message, href) VALUES (?,?,?,?)')
-    .run(userId, title, message || '', href || '');
+  publishServiceEvent('/internal/v1/notifications', {
+    user_id: userId,
+    title,
+    message: message || '',
+    href: href || '',
+  });
 }
 
 module.exports = { db, audit, recordHistory, notifyUser };

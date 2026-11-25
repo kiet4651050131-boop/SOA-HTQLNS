@@ -1,0 +1,318 @@
+openapi: 3.1.0
+info:
+  title: HRM Identity Service
+  version: 1.0.0
+  description: Private identity, credential, and token introspection contract.
+servers:
+  - url: http://127.0.0.1:3001
+security:
+  - InternalServiceToken: []
+paths:
+  /health:
+    get:
+      operationId: identityServiceHealth
+      security: []
+      responses:
+        '200': { description: Service is running }
+  /internal/v1/auth/status:
+    get:
+      operationId: identityRegistrationStatus
+      responses:
+        '200':
+          description: Whether initial Admin registration is open
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [registrationOpen]
+                properties:
+                  registrationOpen: { type: boolean }
+        '401': { description: Internal service token is missing or invalid }
+  /internal/v1/auth/login:
+    post:
+      operationId: identityLogin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string }
+                ip: { type: string }
+      responses:
+        '201':
+          description: Authenticated user and signed access token
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [token, user]
+                properties:
+                  token: { type: string }
+                  user: { $ref: '#/components/schemas/IdentityUser' }
+        '401': { description: Credentials are invalid or internal service token is missing or invalid }
+        '429': { description: Login rate limit exceeded }
+  /internal/v1/auth/register:
+    post:
+      operationId: registerInitialAdmin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, email, password]
+              properties:
+                name: { type: string }
+                email: { type: string, format: email }
+                password: { type: string, minLength: 8 }
+      responses:
+        '201':
+          description: Initial Admin account created
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, role]
+                properties:
+                  ok: { type: boolean, const: true }
+                  role: { type: string, const: admin }
+        '400': { description: Invalid account details }
+        '403': { description: Initial registration is closed }
+        '409': { description: Email is already registered }
+  /internal/v1/auth/change-password:
+    post:
+      operationId: changeIdentityPassword
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id, current, next]
+              properties:
+                user_id: { type: integer, minimum: 1 }
+                current: { type: string }
+                next: { type: string, minLength: 8 }
+      responses:
+        '201': { description: Password changed }
+        '400': { description: Current or new password is invalid }
+        '401': { description: User no longer exists }
+  /internal/v1/auth/forgot-password:
+    post:
+      operationId: requestPasswordReset
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email: { type: string, format: email }
+                ip: { type: string }
+      responses:
+        '201': { description: Generic response that does not reveal account existence }
+        '400': { description: Invalid email }
+        '429': { description: Reset request rate limit exceeded }
+        '503': { description: Email Service is unavailable }
+  /internal/v1/auth/reset-password:
+    post:
+      operationId: resetIdentityPassword
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token, password]
+              properties:
+                token: { type: string }
+                password: { type: string, minLength: 8 }
+      responses:
+        '201': { description: Password reset completed }
+        '400': { description: Reset token or password is invalid }
+  /internal/v1/introspect:
+    post:
+      operationId: introspectAccessToken
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token: { type: string }
+      responses:
+        '201':
+          description: Current identity claims for the token
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/IdentityUser' }
+        '400': { description: Token is missing }
+        '401': { description: Token is invalid, expired, or its user was deleted }
+  /internal/v1/users:
+    get:
+      operationId: listIdentityUsers
+      parameters:
+        - in: query
+          name: id
+          schema: { type: integer, minimum: 1 }
+        - in: query
+          name: roles
+          description: Comma-separated user roles
+          schema: { type: string }
+        - in: query
+          name: emails
+          description: Comma-separated email addresses
+          schema: { type: string }
+      responses:
+        '200':
+          description: Matching users without credential fields
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/IdentityUser' }
+        '400': { description: Invalid user filter }
+    post:
+      operationId: createIdentityUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, email, role]
+              properties:
+                name: { type: string }
+                email: { type: string, format: email }
+                role: { $ref: '#/components/schemas/Role' }
+                password: { type: string, minLength: 8 }
+      responses:
+        '201':
+          description: User created; temporaryPassword is returned only if no password was supplied
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id]
+                properties:
+                  id: { type: integer }
+                  temporaryPassword: { type: string }
+        '400': { description: Invalid user details }
+        '409': { description: Email is already registered }
+        '503': { description: Employee profile could not be ensured }
+  /internal/v1/users/{id}/role:
+    put:
+      operationId: updateIdentityRole
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [role]
+              properties:
+                role: { $ref: '#/components/schemas/Role' }
+      responses:
+        '200': { description: Role updated; response includes user_email for audit }
+        '400': { description: Invalid role or user ID }
+        '404': { description: User not found }
+  /internal/v1/users/{id}/reset-password:
+    post:
+      operationId: resetUserPassword
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+      responses:
+        '201':
+          description: Temporary password generated and must be changed on next login
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [temporaryPassword, user_email]
+                properties:
+                  temporaryPassword: { type: string }
+                  user_email: { type: string, format: email }
+        '404': { description: User not found }
+  /internal/v1/users/{id}:
+    delete:
+      operationId: deleteIdentityUser
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+      responses:
+        '200': { description: User deleted; response includes user_email for audit }
+        '404': { description: User not found }
+  /internal/v1/migrate:
+    post:
+      operationId: migrateLegacyIdentityData
+      description: Idempotently imports a bounded batch from the legacy Core database during startup.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                users:
+                  type: array
+                  maxItems: 500
+                  items: { $ref: '#/components/schemas/LegacyUser' }
+                password_reset_tokens:
+                  type: array
+                  maxItems: 500
+                  items: { $ref: '#/components/schemas/LegacyResetToken' }
+      responses:
+        '201': { description: Batch migrated }
+        '400': { description: Invalid migration batch }
+components:
+  securitySchemes:
+    InternalServiceToken:
+      type: apiKey
+      in: header
+      name: X-Internal-Service-Token
+  parameters:
+    UserId:
+      in: path
+      name: id
+      required: true
+      schema: { type: integer, minimum: 1 }
+  schemas:
+    Role:
+      type: string
+      enum: [admin, hr, manager, employee]
+    IdentityUser:
+      type: object
+      required: [id, email, name, role, must_change_password]
+      properties:
+        id: { type: integer }
+        email: { type: string, format: email }
+        name: { type: string }
+        role: { $ref: '#/components/schemas/Role' }
+        must_change_password: { type: integer, enum: [0, 1] }
+        created_at: { type: string }
+    LegacyUser:
+      type: object
+      required: [id, email, name, password_hash, role, must_change_password, created_at]
+      properties:
+        id: { type: integer }
+        email: { type: string, format: email }
+        name: { type: string }
+        password_hash: { type: string }
+        role: { $ref: '#/components/schemas/Role' }
+        must_change_password: { type: integer, enum: [0, 1] }
+        created_at: { type: string }
+    LegacyResetToken:
+      type: object
+      required: [token_hash, user_id, expires_at]
+      properties:
+        token_hash: { type: string }
+        user_id: { type: integer }
+        expires_at: { type: integer }

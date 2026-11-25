@@ -1,39 +1,41 @@
-const nodemailer = require('nodemailer');
-
 function getMailConfig() {
-  const port = Number(process.env.SMTP_PORT || 587);
-  const secure = process.env.SMTP_SECURE === 'true' || port === 465;
   const appUrl = String(process.env.APP_URL || '').replace(/\/+$/, '');
-  if (!process.env.SMTP_HOST || !process.env.SMTP_FROM || !appUrl
-    || !Number.isInteger(port) || port < 1 || port > 65535) return null;
+  if (!appUrl) return null;
   let url;
   try { url = new URL(appUrl); } catch { return null; }
   if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) return null;
   const localHost = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
   if (url.protocol !== 'https:' && !(url.protocol === 'http:' && localHost)) return null;
-  return {
-    host: process.env.SMTP_HOST,
-    port,
-    secure,
-    from: process.env.SMTP_FROM,
-    appUrl,
-    auth: process.env.SMTP_USER && process.env.SMTP_PASS
-      ? { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS }
-      : undefined,
-  };
+  return { appUrl };
 }
 
-function sendEmail(config, message) {
-  const transporter = nodemailer.createTransport({
-    host: config.host,
-    port: config.port,
-    secure: config.secure,
-    connectionTimeout: 10000,
-    greetingTimeout: 10000,
-    socketTimeout: 15000,
-    ...(config.auth ? { auth: config.auth } : {}),
+async function sendEmail(_config, message) {
+  const serviceUrl = new URL(process.env.EMAIL_SERVICE_URL || 'http://127.0.0.1:3200');
+  if (!['http:', 'https:'].includes(serviceUrl.protocol) || serviceUrl.username || serviceUrl.password) {
+    throw new Error('EMAIL_SERVICE_URL must be an HTTP(S) URL without credentials');
+  }
+  const timeoutMs = Number(process.env.EMAIL_SERVICE_TIMEOUT_MS || 20000);
+  if (!Number.isInteger(timeoutMs) || timeoutMs < 1) throw new Error('EMAIL_SERVICE_TIMEOUT_MS must be a positive integer');
+  const response = await fetch(new URL('/internal/v1/email', serviceUrl), {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Internal-Service-Token': process.env.INTERNAL_SERVICE_TOKEN
+        || (process.env.NODE_ENV === 'production' ? '' : 'dev-only-internal-service-token'),
+    },
+    body: JSON.stringify({
+      to: message.to,
+      subject: message.subject,
+      ...(message.text ? { text: message.text } : {}),
+      ...(message.html ? { html: message.html } : {}),
+    }),
+    signal: AbortSignal.timeout(timeoutMs),
   });
-  return transporter.sendMail({ from: config.from, ...message });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(result.error || `Email service returned HTTP ${response.status}`);
+  }
+  return result;
 }
 
 let missingConfigReported = false;

@@ -1,0 +1,231 @@
+openapi: 3.1.0
+info:
+  title: HRM Email and Notification Service
+  version: 1.0.0
+  description: Internal service contract. Bind this service to a private interface only.
+servers:
+  - url: http://127.0.0.1:3200
+security:
+  - InternalServiceToken: []
+paths:
+  /health:
+    get:
+      operationId: serviceHealth
+      summary: Check service liveness
+      security: []
+      responses:
+        '200':
+          description: Service is running
+  /internal/v1/email:
+    post:
+      operationId: dispatchEmail
+      summary: Send one email and record the dispatch result
+      description: >
+        Requires the X-Internal-Service-Token header. The service uses its own
+        SMTP configuration and database; message contents are not persisted.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [to, subject]
+              properties:
+                to: { type: string, format: email }
+                subject: { type: string, minLength: 1 }
+                text: { type: string }
+                html: { type: string }
+      responses:
+        '201':
+          description: Email sent
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok]
+                properties:
+                  ok: { type: boolean, const: true }
+        '400': { description: Invalid email request }
+        '401': { description: Internal service token is missing or invalid }
+        '503': { description: SMTP is unavailable or delivery failed }
+  /internal/v1/notifications:
+    post:
+      operationId: createNotification
+      summary: Store an in-app notification for a user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id, title]
+              properties:
+                user_id: { type: integer, minimum: 1 }
+                title: { type: string, minLength: 1 }
+                message: { type: string }
+                href: { type: string }
+      responses:
+        '201':
+          description: Notification created
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id]
+                properties:
+                  id: { type: integer }
+        '400': { description: Invalid notification }
+        '401': { description: Internal service token is missing or invalid }
+    get:
+      operationId: listNotifications
+      summary: List a user's notifications
+      parameters:
+        - in: query
+          name: userId
+          required: true
+          schema: { type: integer, minimum: 1 }
+      responses:
+        '200':
+          description: Notifications and unread count
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [notifications, unread]
+                properties:
+                  notifications:
+                    type: array
+                    items: { $ref: '#/components/schemas/Notification' }
+                  unread: { type: integer, minimum: 0 }
+        '400': { description: Invalid user id }
+        '401': { description: Internal service token is missing or invalid }
+  /internal/v1/notifications/read-all:
+    put:
+      operationId: markAllNotificationsRead
+      summary: Mark all of a user's notifications as read
+      parameters:
+        - in: query
+          name: userId
+          required: true
+          schema: { type: integer, minimum: 1 }
+      responses:
+        '200': { description: Notifications marked as read }
+        '400': { description: Invalid user id }
+        '401': { description: Internal service token is missing or invalid }
+  /internal/v1/notifications/{id}/read:
+    put:
+      operationId: markNotificationRead
+      summary: Mark one notification as read
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer, minimum: 1 }
+        - in: query
+          name: userId
+          required: true
+          schema: { type: integer, minimum: 1 }
+      responses:
+        '200': { description: Notification read result }
+        '400': { description: Invalid notification or user id }
+        '401': { description: Internal service token is missing or invalid }
+  /internal/v1/audit:
+    post:
+      operationId: recordAuditEvent
+      summary: Store an audit event
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_email, action]
+              properties:
+                user_email: { type: string }
+                action: { type: string, minLength: 1 }
+      responses:
+        '201': { description: Audit event created }
+        '400': { description: Invalid audit event }
+        '401': { description: Internal service token is missing or invalid }
+    get:
+      operationId: listAuditEvents
+      summary: List recent audit events
+      parameters:
+        - in: query
+          name: limit
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 300, default: 300 }
+      responses:
+        '200':
+          description: Recent audit events
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/AuditEvent' }
+        '401': { description: Internal service token is missing or invalid }
+  /internal/v1/migrate:
+    post:
+      operationId: migrateLegacyCommunicationData
+      summary: Import one idempotent batch of legacy notifications and audit events
+      description: Used during Core startup. Each array can contain at most 500 records.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                notifications:
+                  type: array
+                  maxItems: 500
+                  items: { $ref: '#/components/schemas/LegacyNotification' }
+                audit_logs:
+                  type: array
+                  maxItems: 500
+                  items: { $ref: '#/components/schemas/LegacyAuditEvent' }
+      responses:
+        '201': { description: Batch migrated transactionally }
+        '400': { description: Invalid migration batch }
+        '401': { description: Internal service token is missing or invalid }
+components:
+  securitySchemes:
+    InternalServiceToken:
+      type: apiKey
+      in: header
+      name: X-Internal-Service-Token
+  schemas:
+    Notification:
+      type: object
+      properties:
+        id: { type: integer }
+        title: { type: string }
+        message: { type: string }
+        href: { type: string }
+        created_at: { type: string }
+        read_at: { type: [string, 'null'] }
+    AuditEvent:
+      type: object
+      properties:
+        at: { type: string }
+        user_email: { type: string }
+        action: { type: string }
+    LegacyNotification:
+      type: object
+      required: [id, user_id, title, created_at]
+      properties:
+        id: { type: integer, minimum: 1 }
+        user_id: { type: integer, minimum: 1 }
+        title: { type: string }
+        message: { type: string }
+        href: { type: string }
+        created_at: { type: string }
+        read_at: { type: [string, 'null'] }
+    LegacyAuditEvent:
+      type: object
+      required: [id, at, user_email, action]
+      properties:
+        id: { type: integer, minimum: 1 }
+        at: { type: string }
+        user_email: { type: string }
+        action: { type: string }

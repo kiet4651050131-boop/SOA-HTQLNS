@@ -1,5 +1,6 @@
 // Hàm dùng chung cho chấm công, nghỉ phép, lương
 const { db } = require('./db');
+const { getCachedSettings, getCachedHolidays } = require('./config-cache');
 
 /* ---------- Ngày giờ (theo múi giờ của server, mặc định Asia/Ho_Chi_Minh) ---------- */
 const pad = (n) => String(n).padStart(2, '0');
@@ -40,13 +41,8 @@ const csvCell = (value) => {
 };
 
 /* ---------- Cấu hình, ngày lễ, ngày làm việc ---------- */
-function getSettings() {
-  const o = {};
-  db.prepare('SELECT key, value FROM settings').all().forEach((r) => { o[r.key] = r.value; });
-  return o;
-}
-const holidays = (from, to) =>
-  new Set(db.prepare('SELECT date FROM holidays WHERE date BETWEEN ? AND ?').all(from, to).map((r) => r.date));
+const getSettings = getCachedSettings;
+const holidays = getCachedHolidays;
 function isWorkday(s, st, hol) {
   const w = parseD(s).getDay();
   return !hol.has(s) && w !== 0 && (w !== 6 || st.work_saturday === '1');

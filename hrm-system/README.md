@@ -2,16 +2,44 @@
 
 Backend: Node.js + NestJS (Express adapter) + TypeScript + SQLite (`node:sqlite`) + JWT + `bcryptjs`. Giao diện HTML/CSS/JavaScript hiện có nằm trong `public/`.
 
-Các API hiện được duy trì qua lớp tương thích Express để bảo toàn hành vi trong giai đoạn chuyển đổi; các phân hệ sẽ được chuyển dần sang NestJS controllers/services. Đây là giai đoạn Modular Monolith, chưa phải SOA hoàn chỉnh.
+## Kiến trúc hiện tại
+
+Ứng dụng đang ở **giai đoạn chuyển đổi sang SOA**, chưa phải SOA hoàn chỉnh:
+
+- API Gateway chạy riêng trên cổng `PORT` (mặc định `3000`), phục vụ giao diện và chuyển tiếp nguyên trạng `/api/*` qua HTTP đến HRM Core Service.
+- HRM Core Service chạy riêng trên `CORE_PORT` (mặc định `3100`) và sở hữu `DB_FILE`.
+- Email/Notification Service chạy riêng trên `EMAIL_PORT` (mặc định `3200`), nhận lệnh email, thông báo và audit từ Core qua HTTP có xác thực nội bộ. Service sở hữu `EMAIL_DB_FILE`, chứa `email_dispatches`, `notifications` và `audit_logs`; không lưu nội dung email hay khóa ngoại sang bảng users. Đây là process duy nhất giữ cấu hình/credential SMTP.
+- Config Service chạy riêng trên `CONFIG_PORT` (mặc định `3300`), sở hữu `CONFIG_DB_FILE` và lưu `settings`/`holidays`. Core gọi service qua HTTP; các nghiệp vụ đồng bộ trong Core đọc cache trong bộ nhớ, được nạp lúc khởi động và làm mới mỗi 30 giây.
+- Identity Service chạy riêng trên `IDENTITY_PORT` (mặc định `3001`), sở hữu `IDENTITY_DB_FILE` và lưu `users`/`password_reset_tokens`. Chỉ Identity giữ `JWT_SECRET`, băm mật khẩu và phát hành token. Gateway gọi introspection qua HTTP, cache danh tính tối đa 30 giây rồi gắn các header đã xác thực khi chuyển tiếp request; Core không tự xác minh JWT.
+- Gateway không truy cập database. Lệnh `npm start` khởi chạy cả năm process; các service kiểm tra health trước khi nhận lưu lượng.
+- Gateway áp dụng timeout `GATEWAY_TIMEOUT_MS` (mặc định 5 giây); lỗi kết nối hoặc timeout trả HTTP 503 với mã `CORE_SERVICE_UNAVAILABLE`.
+- Gateway áp dụng `IDENTITY_SERVICE_TIMEOUT_MS` (mặc định 3 giây); nếu Identity không khả dụng, request cần đăng nhập trả HTTP 503.
+- Core áp dụng timeout `EMAIL_SERVICE_TIMEOUT_MS` cho email; các lệnh thông báo/audit dùng `NOTIFICATION_SERVICE_TIMEOUT_MS`, không chặn nghiệp vụ và ghi lỗi nếu gửi thất bại.
+- Core áp dụng `CONFIG_SERVICE_TIMEOUT_MS` khi gọi Config Service. Nếu service tạm ngừng, các phép tính nghiệp vụ tiếp tục dùng bản cache cuối cùng; API cấu hình trả lỗi 503 khi không thể liên lạc với service.
+- Gateway ghi đè `X-Forwarded-For` bằng địa chỉ client do Express xác định; Core chỉ tin header proxy từ loopback. Nếu đặt Nginx/Caddy trước Gateway, cấu hình `GATEWAY_TRUST_PROXY` theo đúng số hop hoặc subnet proxy tin cậy.
+- Hợp đồng REST công khai được mô tả trong [`contracts/hrm-api.yaml`](./contracts/hrm-api.yaml) theo OpenAPI 3.1.
+- Hợp đồng nội bộ Core → Email/Notification Service được mô tả trong [`contracts/email-service.openapi.yaml`](./contracts/email-service.openapi.yaml).
+- Hợp đồng nội bộ Core → Config Service được mô tả trong [`contracts/config-service.openapi.yaml`](./contracts/config-service.openapi.yaml).
+- Hợp đồng nội bộ Gateway/Core → Identity Service được mô tả trong [`contracts/identity-service.openapi.yaml`](./contracts/identity-service.openapi.yaml).
+- Hợp đồng Identity → Core cho thao tác bảo đảm hồ sơ nhân viên được mô tả trong [`contracts/core-internal.openapi.yaml`](./contracts/core-internal.openapi.yaml).
+- Khi khởi động, Core chuyển dữ liệu `notifications`/`audit_logs` cũ sang service theo batch, sau đó xóa hai bảng cũ khỏi `hrm.db`.
+- Khi khởi động, Core cũng chuyển `settings`/`holidays` cũ sang `config.db`, rồi xóa các bảng đó khỏi `hrm.db`.
+- Khi khởi động, Core chuyển `users`/`password_reset_tokens` cũ sang `identity.db` (giữ nguyên ID, password hash và token hash), rồi xóa các bảng đó khỏi `hrm.db`. Nếu chuyển dữ liệu thất bại, Core không khởi động để tránh mất dữ liệu.
+- Tạo tài khoản mới gọi Core qua endpoint nội bộ để bảo đảm hồ sơ nhân viên tồn tại; các truy vấn users trong Leave, Overtime và Payroll gọi Identity API thay vì đọc DB của Identity.
+- Nhân viên, tổ chức, chấm công, nghỉ phép, tăng ca, lương, báo cáo và lịch sử vẫn nằm trong Core, dùng chung `hrm.db`/`lib.js`; các miền này chưa có process/database riêng và tiếp tục cần tách.
 
 ## Chạy thử (5 phút)
 
 ```bash
 npm install
 cp .env.example .env        # rồi điền JWT_SECRET (xem hướng dẫn trong file)
-npm start                   # tự biên dịch TypeScript, rồi chạy http://localhost:3000
+npm start                   # tự biên dịch, chạy Gateway :3000, Identity :3001, Core :3100, Email :3200, Config :3300
 npm test                    # chạy bộ kiểm thử API 
 ```
+
+Trong môi trường production, đặt `INTERNAL_SERVICE_TOKEN` thành chuỗi ngẫu nhiên dài; không dùng token mặc định dành cho development. `npm run start:core`, `npm run start:gateway`, `npm run start:email`, `npm run start:config`, `npm run start:identity` khởi chạy từng process riêng nếu cần. Nếu chạy Core riêng, phải khởi động Identity, Email/Notification và Config Service trước.
+
+Khi phát triển có hot reload, chạy `npm run dev:identity`, `npm run dev:email`, `npm run dev:config`, `npm run dev:core` và `npm run dev:gateway` trong năm terminal riêng.
 
 Lần chạy đầu tiên, màn hình đăng nhập có nút tạo **tài khoản Admin đầu tiên**. Sau đó đăng ký tự do **đóng hẳn**: Admin tạo tài khoản ở tab "Tài khoản" (hệ thống sinh mật khẩu tạm, hiện một lần để chuyển cho nhân viên). HR tạo được tài khoản Nhân viên qua API `POST /api/users`; Admin tạo và đổi được mọi vai trò. Mật khẩu tối thiểu 8 ký tự. Tài khoản mới và tài khoản được Admin đặt lại mật khẩu phải đổi mật khẩu ở lần đăng nhập tiếp theo; khi nâng cấp hệ thống, các tài khoản hiện có cũng cần đổi mật khẩu một lần.
 
@@ -67,10 +95,10 @@ Lần chạy đầu tiên, màn hình đăng nhập có nút tạo **tài khoả
 - Nhân viên đã có phiếu lương thì không xóa được hồ sơ, hãy chuyển trạng thái "Nghỉ việc".
 
 ## Triển khai thật
-1. Đặt `NODE_ENV=production` và `JWT_SECRET` dài ngẫu nhiên (server từ chối chạy nếu thiếu).
-2. **Bắt buộc chạy sau HTTPS** (Nginx/Caddy làm reverse proxy). Nếu dùng proxy, thêm `app.set('trust proxy', 1)` trong `server.js` để giới hạn đăng nhập tính đúng IP.
-3. Chạy bằng `npm run build && pm2 start dist/main.js` hoặc `docker build -t hrm . && docker run -d -p 3000:3000 -v hrm-data:/app/data --env-file .env hrm`.
-4. **Sao lưu** thư mục `data/` hằng ngày (cron copy `data/hrm.db`), và thử khôi phục ít nhất một lần.
+1. Đặt `NODE_ENV=production`, `JWT_SECRET` dài ngẫu nhiên (chỉ Identity nhận giá trị này) và `INTERNAL_SERVICE_TOKEN` dài ít nhất 32 byte.
+2. **Bắt buộc chạy sau HTTPS** (Nginx/Caddy làm reverse proxy). Nếu dùng proxy, cấu hình `GATEWAY_TRUST_PROXY` đúng với proxy tin cậy để giới hạn đăng nhập tính đúng IP; không bật trust proxy rộng nếu chưa kiểm soát được nguồn kết nối.
+3. Chạy bằng `npm start` hoặc `docker build -t hrm . && docker run -d -p 3000:3000 -v hrm-data:/app/data --env-file .env hrm`. Chỉ expose cổng Gateway ra ngoài; Core Service mặc định chỉ bind loopback.
+4. **Sao lưu** toàn bộ thư mục `data/` hằng ngày (bao gồm `hrm.db`, `email.db`, `config.db` và `identity.db`), và thử khôi phục ít nhất một lần.
 
 ## Giới hạn hiện tại
 - Upload và lưu file hợp đồng/giấy tờ, thông báo email (ngoại trừ email khôi phục mật khẩu)

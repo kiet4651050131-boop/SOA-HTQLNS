@@ -1,0 +1,924 @@
+openapi: 3.1.0
+info:
+  title: HRM REST API
+  version: 1.0.0
+  description: >
+    Public REST contract served by the API Gateway. Requests under /api are
+    forwarded to HRM Core Service without changing paths, query strings,
+    methods, or response bodies. Authenticated operations use a Bearer JWT.
+    Any API operation may also return 503 CORE_SERVICE_UNAVAILABLE when the
+    Core Service cannot be reached or exceeds the gateway timeout.
+servers:
+  - url: http://localhost:3000
+    description: Local API Gateway
+security:
+  - BearerAuth: []
+tags:
+  - name: Authentication
+  - name: Employees
+  - name: Organization
+  - name: Attendance
+  - name: Leave
+  - name: Overtime
+  - name: Payroll
+  - name: Reports
+  - name: Notifications
+  - name: Administration
+paths:
+  /health:
+    get:
+      operationId: gatewayHealth
+      summary: Check API Gateway liveness
+      security: []
+      responses:
+        '200':
+          description: Gateway is running
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, service]
+                properties:
+                  status: { type: string, const: ok }
+                  service: { type: string, const: hrm-api-gateway }
+  /api/auth/status:
+    get:
+      tags: [Authentication]
+      operationId: getRegistrationStatus
+      summary: Check whether first-admin registration is open
+      security: []
+      responses:
+        '200': { description: Registration status }
+  /api/auth/forgot-password:
+    post:
+      tags: [Authentication]
+      operationId: requestPasswordReset
+      summary: Request a password-reset email
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email: { type: string, format: email }
+      responses:
+        '200': { description: Reset request accepted }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '429': { description: Rate limit exceeded }
+        '503': { description: Email service unavailable }
+  /api/auth/reset-password:
+    post:
+      tags: [Authentication]
+      operationId: resetPassword
+      summary: Set a new password using a reset token
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token, password]
+              properties:
+                token: { type: string, minLength: 64, maxLength: 64 }
+                password: { type: string, minLength: 8 }
+      responses:
+        '200': { description: Password changed }
+        '400': { $ref: '#/components/responses/BadRequest' }
+  /api/auth/register:
+    post:
+      tags: [Authentication]
+      operationId: registerFirstAdmin
+      summary: Create the first administrator account
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, email, password]
+              properties:
+                name: { type: string }
+                email: { type: string, format: email }
+                password: { type: string, minLength: 8 }
+      responses:
+        '201': { description: Administrator created }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { description: Registration is closed }
+  /api/auth/login:
+    post:
+      tags: [Authentication]
+      operationId: login
+      summary: Authenticate and receive a JWT
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string }
+      responses:
+        '200': { description: Login succeeded }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { description: Rate limit exceeded }
+  /api/auth/me:
+    get:
+      tags: [Authentication]
+      operationId: getCurrentUser
+      summary: Return the current authenticated user
+      responses:
+        '200': { description: Current user }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /api/auth/change-password:
+    post:
+      tags: [Authentication]
+      operationId: changePassword
+      summary: Change the current user's password
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [current, next]
+              properties:
+                current: { type: string }
+                next: { type: string, minLength: 8 }
+      responses:
+        '200': { description: Password changed }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /api/departments:
+    get:
+      tags: [Organization]
+      operationId: listDepartments
+      summary: List departments
+      responses:
+        '200': { description: Department list }
+    post:
+      tags: [Organization]
+      operationId: createDepartment
+      summary: Create a department
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string }
+      responses:
+        '201': { description: Department created }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /api/departments/{id}:
+    delete:
+      tags: [Organization]
+      operationId: deleteDepartment
+      summary: Delete a department
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200': { description: Department deleted }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { description: Department is in use }
+  /api/positions:
+    get:
+      tags: [Organization]
+      operationId: listPositions
+      summary: List positions
+      responses:
+        '200': { description: Position list }
+    post:
+      tags: [Organization]
+      operationId: createPosition
+      summary: Create a position
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string }
+      responses:
+        '201': { description: Position created }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /api/positions/{id}:
+    delete:
+      tags: [Organization]
+      operationId: deletePosition
+      summary: Delete a position
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200': { description: Position deleted }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { description: Position is in use }
+  /api/employees:
+    get:
+      tags: [Employees]
+      operationId: listEmployees
+      summary: List employees visible to the current user
+      parameters:
+        - { name: q, in: query, schema: { type: string } }
+        - { name: department_id, in: query, schema: { type: integer } }
+      responses:
+        '200': { description: Employee list }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      tags: [Employees]
+      operationId: createEmployee
+      summary: Create an employee profile
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code, name, email]
+              properties:
+                code: { type: string }
+                name: { type: string }
+                email: { type: string, format: email }
+                phone: { type: string }
+                department_id: { type: integer }
+                position_id: { type: integer }
+                status: { type: string }
+                start_date: { type: string, format: date }
+      responses:
+        '201': { description: Employee created }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /api/employees/export:
+    get:
+      tags: [Employees]
+      operationId: exportEmployees
+      summary: Export employees as CSV
+      responses:
+        '200':
+          description: UTF-8 CSV export
+          content:
+            text/csv: { schema: { type: string } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /api/employees/import:
+    post:
+      tags: [Employees]
+      operationId: importEmployees
+      summary: Import employees
+      requestBody:
+        required: true
+        content:
+          application/json: { schema: { type: object } }
+      responses:
+        '200': { description: Import results }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /api/employees/{id}:
+    put:
+      tags: [Employees]
+      operationId: updateEmployee
+      summary: Update an employee profile
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json: { schema: { type: object } }
+      responses:
+        '200': { description: Employee updated }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [Employees]
+      operationId: deleteEmployee
+      summary: Delete an employee profile
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200': { description: Employee deleted }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { description: Employee is referenced by payroll data }
+  /api/attendance/today:
+    get:
+      tags: [Attendance]
+      operationId: getTodayAttendance
+      summary: Get today's attendance status
+      responses:
+        '200': { description: Attendance status }
+  /api/attendance/export:
+    get:
+      tags: [Attendance]
+      operationId: exportAttendance
+      summary: Export monthly attendance as CSV
+      responses:
+        '200':
+          description: UTF-8 CSV export
+          content:
+            text/csv: { schema: { type: string } }
+  /api/attendance/check-in:
+    post:
+      tags: [Attendance]
+      operationId: checkIn
+      summary: Record check-in
+      responses:
+        '200': { description: Check-in recorded }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '409': { description: Attendance is locked by payroll }
+  /api/attendance/check-out:
+    post:
+      tags: [Attendance]
+      operationId: checkOut
+      summary: Record check-out
+      responses:
+        '200': { description: Check-out recorded }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '409': { description: Attendance is locked by payroll }
+  /api/attendance/month:
+    get:
+      tags: [Attendance]
+      operationId: getMonthlyAttendance
+      summary: Get monthly attendance for the current user's scope
+      parameters:
+        - { name: month, in: query, schema: { type: string, pattern: '^\d{4}-\d{2}$' } }
+      responses:
+        '200': { description: Monthly attendance }
+        '400': { $ref: '#/components/responses/BadRequest' }
+  /api/attendance/month/{employeeId}:
+    get:
+      tags: [Attendance]
+      operationId: getEmployeeMonthlyAttendance
+      summary: Get monthly attendance for one employee
+      parameters:
+        - name: employeeId
+          in: path
+          required: true
+          schema: { type: integer }
+        - { name: month, in: query, schema: { type: string, pattern: '^\d{4}-\d{2}$' } }
+      responses:
+        '200': { description: Monthly attendance }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/attendance:
+    put:
+      tags: [Attendance]
+      operationId: updateAttendance
+      summary: Create or update an attendance record
+      requestBody:
+        required: true
+        content:
+          application/json: { schema: { type: object } }
+      responses:
+        '200': { description: Attendance updated }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { description: Attendance is locked by payroll }
+  /api/attendance/import:
+    post:
+      tags: [Attendance]
+      operationId: importAttendance
+      summary: Import attendance records
+      requestBody:
+        required: true
+        content:
+          application/json: { schema: { type: object } }
+      responses:
+        '200': { description: Import results }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /api/leave/types:
+    get:
+      tags: [Leave]
+      operationId: listLeaveTypes
+      summary: List leave types
+      responses:
+        '200': { description: Leave type list }
+  /api/leave/balance:
+    get:
+      tags: [Leave]
+      operationId: getLeaveBalance
+      summary: Get annual leave balance
+      parameters:
+        - { name: year, in: query, schema: { type: integer } }
+      responses:
+        '200': { description: Leave balance }
+  /api/leave:
+    get:
+      tags: [Leave]
+      operationId: listLeaveRequests
+      summary: List leave requests visible to the current user
+      responses:
+        '200': { description: Leave request list }
+    post:
+      tags: [Leave]
+      operationId: createLeaveRequest
+      summary: Submit a leave request
+      requestBody:
+        required: true
+        content:
+          application/json: { schema: { type: object } }
+      responses:
+        '201': { description: Leave request created }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '409': { description: Requested dates include a locked payroll period }
+  /api/leave/{id}/decide:
+    put:
+      tags: [Leave]
+      operationId: decideLeaveRequest
+      summary: Approve or reject a leave request
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json: { schema: { type: object } }
+      responses:
+        '200': { description: Leave request updated }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/leave/{id}/cancel:
+    put:
+      tags: [Leave]
+      operationId: cancelLeaveRequest
+      summary: Cancel a leave request
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200': { description: Leave request cancelled }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { description: Request belongs to a locked payroll period }
+  /api/overtime:
+    get:
+      tags: [Overtime]
+      operationId: listOvertimeRequests
+      summary: List overtime requests visible to the current user
+      responses:
+        '200': { description: Overtime request list }
+    post:
+      tags: [Overtime]
+      operationId: createOvertimeRequest
+      summary: Submit an overtime request
+      requestBody:
+        required: true
+        content:
+          application/json: { schema: { type: object } }
+      responses:
+        '201': { description: Overtime request created }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '409': { description: Request date belongs to a locked payroll period }
+  /api/overtime/{id}/decide:
+    put:
+      tags: [Overtime]
+      operationId: decideOvertimeRequest
+      summary: Approve or reject an overtime request
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json: { schema: { type: object } }
+      responses:
+        '200': { description: Overtime request updated }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/overtime/{id}/cancel:
+    put:
+      tags: [Overtime]
+      operationId: cancelOvertimeRequest
+      summary: Cancel an overtime request
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200': { description: Overtime request cancelled }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { description: Request belongs to a locked payroll period }
+  /api/payroll/salary:
+    get:
+      tags: [Payroll]
+      operationId: listSalaries
+      summary: List salary details
+      responses:
+        '200': { description: Salary list }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /api/payroll/salary/{employeeId}:
+    put:
+      tags: [Payroll]
+      operationId: updateSalary
+      summary: Update an employee's salary settings
+      parameters:
+        - name: employeeId
+          in: path
+          required: true
+          schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/json: { schema: { type: object } }
+      responses:
+        '200': { description: Salary updated }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /api/payroll/periods:
+    get:
+      tags: [Payroll]
+      operationId: listPayrollPeriods
+      summary: List payroll periods
+      responses:
+        '200': { description: Payroll period list }
+    post:
+      tags: [Payroll]
+      operationId: createPayrollPeriod
+      summary: Create a payroll period
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [month]
+              properties:
+                month: { type: string, pattern: '^\d{4}-\d{2}$' }
+      responses:
+        '201': { description: Payroll period created }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /api/payroll/periods/{id}/payslips:
+    get:
+      tags: [Payroll]
+      operationId: listPayslips
+      summary: List payslips for a payroll period
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200': { description: Payslip list }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/payroll/periods/{id}/adjustments:
+    get:
+      tags: [Payroll]
+      operationId: listPayrollAdjustments
+      summary: List payroll adjustments
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200': { description: Adjustment list }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [Payroll]
+      operationId: createPayrollAdjustment
+      summary: Add a bonus, penalty, or advance
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json: { schema: { type: object } }
+      responses:
+        '201': { description: Adjustment created }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /api/payroll/periods/{id}/adjustments/{adjId}:
+    delete:
+      tags: [Payroll]
+      operationId: deletePayrollAdjustment
+      summary: Delete a payroll adjustment
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - name: adjId
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        '200': { description: Adjustment deleted }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/payroll/periods/{id}/calculate:
+    post:
+      tags: [Payroll]
+      operationId: calculatePayroll
+      summary: Calculate payslips for a payroll period
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200': { description: Calculation results }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/payroll/periods/{id}/lock:
+    post:
+      tags: [Payroll]
+      operationId: lockPayrollPeriod
+      summary: Lock a payroll period
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200': { description: Payroll period locked }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /api/payroll/periods/{id}/unlock:
+    post:
+      tags: [Payroll]
+      operationId: unlockPayrollPeriod
+      summary: Unlock a payroll period
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200': { description: Payroll period unlocked }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /api/payroll/periods/{id}:
+    delete:
+      tags: [Payroll]
+      operationId: deletePayrollPeriod
+      summary: Delete a payroll period
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200': { description: Payroll period deleted }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { description: Payroll period is locked }
+  /api/payroll/periods/{id}/export:
+    get:
+      tags: [Payroll]
+      operationId: exportPayroll
+      summary: Export payroll as CSV
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: UTF-8 CSV export
+          content:
+            text/csv: { schema: { type: string } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /api/payroll/advances:
+    get:
+      tags: [Payroll]
+      operationId: listAdvanceRequests
+      summary: List advance requests visible to the current user
+      responses:
+        '200': { description: Advance request list }
+    post:
+      tags: [Payroll]
+      operationId: createAdvanceRequest
+      summary: Submit a salary advance request
+      requestBody:
+        required: true
+        content:
+          application/json: { schema: { type: object } }
+      responses:
+        '201': { description: Advance request created }
+        '400': { $ref: '#/components/responses/BadRequest' }
+  /api/payroll/advances/{id}/decision:
+    put:
+      tags: [Payroll]
+      operationId: decideAdvanceRequest
+      summary: Approve or reject a salary advance request
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json: { schema: { type: object } }
+      responses:
+        '200': { description: Advance request updated }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/reports:
+    get:
+      tags: [Reports]
+      operationId: getHrReport
+      summary: Get HR summary report
+      parameters:
+        - { name: month, in: query, schema: { type: string, pattern: '^\d{4}-\d{2}$' } }
+      responses:
+        '200': { description: HR report }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /api/reports/export:
+    get:
+      tags: [Reports]
+      operationId: exportHrReport
+      summary: Export HR report as CSV
+      responses:
+        '200':
+          description: UTF-8 CSV export
+          content:
+            text/csv: { schema: { type: string } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /api/history:
+    get:
+      tags: [Administration]
+      operationId: listEmployeeHistory
+      summary: List profile and salary change history
+      parameters:
+        - { name: employee_id, in: query, schema: { type: integer } }
+      responses:
+        '200': { description: History entries }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/notifications:
+    get:
+      tags: [Notifications]
+      operationId: listNotifications
+      summary: List notifications for the current user
+      responses:
+        '200': { description: Notifications and unread count }
+  /api/notifications/read-all:
+    put:
+      tags: [Notifications]
+      operationId: markAllNotificationsRead
+      summary: Mark all current user's notifications as read
+      responses:
+        '200': { description: Notifications marked read }
+  /api/notifications/{id}/read:
+    put:
+      tags: [Notifications]
+      operationId: markNotificationRead
+      summary: Mark one notification as read
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200': { description: Notification marked read }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/dashboard:
+    get:
+      tags: [Reports]
+      operationId: getDashboard
+      summary: Get role-specific dashboard data
+      responses:
+        '200': { description: Dashboard data }
+  /api/settings:
+    get:
+      tags: [Administration]
+      operationId: getSettings
+      summary: Get HRM settings
+      responses:
+        '200': { description: HRM settings }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    put:
+      tags: [Administration]
+      operationId: updateSettings
+      summary: Update HRM settings
+      requestBody:
+        required: true
+        content:
+          application/json: { schema: { type: object } }
+      responses:
+        '200': { description: Settings updated }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /api/holidays:
+    get:
+      tags: [Administration]
+      operationId: listHolidays
+      summary: List public holidays
+      responses:
+        '200': { description: Holiday list }
+    post:
+      tags: [Administration]
+      operationId: createHoliday
+      summary: Create a public holiday
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [date, name]
+              properties:
+                date: { type: string, format: date }
+                name: { type: string }
+      responses:
+        '201': { description: Holiday created }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /api/holidays/{date}:
+    delete:
+      tags: [Administration]
+      operationId: deleteHoliday
+      summary: Delete a public holiday
+      parameters:
+        - name: date
+          in: path
+          required: true
+          schema: { type: string, format: date }
+      responses:
+        '200': { description: Holiday deleted }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /api/users:
+    get:
+      tags: [Administration]
+      operationId: listUsers
+      summary: List user accounts
+      responses:
+        '200': { description: User list }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [Administration]
+      operationId: createUser
+      summary: Create a user account
+      requestBody:
+        required: true
+        content:
+          application/json: { schema: { type: object } }
+      responses:
+        '201': { description: User created }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /api/users/{id}/role:
+    put:
+      tags: [Administration]
+      operationId: updateUserRole
+      summary: Change a user's role
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [role]
+              properties:
+                role: { type: string, enum: [admin, hr, manager, employee] }
+      responses:
+        '200': { description: Role updated }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /api/users/{id}/reset-password:
+    post:
+      tags: [Administration]
+      operationId: resetUserPassword
+      summary: Set a temporary password for a user
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200': { description: Temporary password generated }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/users/{id}:
+    delete:
+      tags: [Administration]
+      operationId: deleteUser
+      summary: Delete a user account
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200': { description: User deleted }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /api/logs:
+    get:
+      tags: [Administration]
+      operationId: listAuditLogs
+      summary: List audit log entries
+      responses:
+        '200': { description: Audit log entries }
+        '403': { $ref: '#/components/responses/Forbidden' }
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  parameters:
+    Id:
+      name: id
+      in: path
+      required: true
+      schema: { type: integer }
+  responses:
+    BadRequest:
+      description: Invalid request data
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Unauthorized:
+      description: Missing or invalid authentication
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Forbidden:
+      description: Insufficient permissions
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string }
+        code: { type: string }
